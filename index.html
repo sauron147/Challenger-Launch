@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MapleStory 유니온 & 연무장 분석 대시보드</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="anchor-layout" id="mainAnchorLayout">
+    
+    <!-- [좌측 컬럼] -->
+    <div class="left-column">
+      <section class="box small-box" style="flex-shrink: 0;">
+        <div class="box-header">
+          <h2>⚙️ API 설정 및 레벨 필터</h2>
+          <span id="statusBadge" class="status-text">대기 중</span>
+        </div>
+        
+        <div class="control-group">
+          <div class="input-row">
+            <input type="password" id="apiKeyInput" placeholder="Nexon Open API Key 입력 (자동저장)" />
+            <button id="toggleKeyBtn" class="btn-sub" type="button">보기</button>
+            <button id="loadAccountBtn" class="btn-primary" type="button">계정 로드</button>
+          </div>
+
+          <div class="filter-row">
+            <div class="filter-item">
+              <label for="worldSelect">월드</label>
+              <select id="worldSelect" disabled>
+                <option value="ALL">전체 월드</option>
+              </select>
+            </div>
+            
+            <div class="filter-item">
+              <label for="maxLevelInput">레벨 조건</label>
+              <div class="level-filter-wrap">
+                <input type="number" id="maxLevelInput" value="300" min="1" max="300" step="1" />
+                <span>Lv 이하만 출력</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="input-row" style="margin-top: 4px;">
+            <input type="text" id="directCharInput" placeholder="닉네임 (쉼표로 여러 개 입력 가능)" />
+            <button id="directSearchBtn" class="btn-primary" type="button">조회 (현재 기수)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 캐릭터 목록 -->
+      <details class="box left-collapsible" id="charListCollapsible" open>
+        <summary class="left-collapsible-summary">
+          <div>
+            <span style="font-size: 14px; font-weight: bold; color: #fff;">📋 캐릭터 목록 (접기/펼치기 ▼)</span>
+            <span id="charCountInfo" class="sub-info" style="display: block; margin-top: 2px;">0명 출력 중</span>
+          </div>
+          <div class="tab-buttons" onclick="event.stopPropagation();">
+            <button id="tabCharList" class="tab-btn active" type="button">개별 캐릭터</button>
+            <button id="tabJobSummary" class="tab-btn" type="button">직업별 묶음</button>
+          </div>
+        </summary>
+
+        <div class="left-collapsible-body">
+          <div class="scroll-area" id="characterListScroll" style="max-height: 220px;">
+            <table class="data-table" id="charListTable">
+              <thead>
+                <tr>
+                  <th>닉네임 (클릭 시 조각 연동)</th>
+                  <th>직업</th>
+                  <th>레벨</th>
+                  <th>월드</th>
+                </tr>
+              </thead>
+              <tbody id="charListBody">
+                <tr><td colspan="4" class="empty-msg">상단에서 API Key 입력 후 [계정 로드]를 눌러주세요.</td></tr>
+              </tbody>
+            </table>
+
+            <table class="data-table hidden" id="jobSummaryTable">
+              <thead>
+                <tr>
+                  <th>직업명</th>
+                  <th>보유 수</th>
+                  <th>레벨 분포</th>
+                </tr>
+              </thead>
+              <tbody id="jobSummaryBody">
+                <tr><td colspan="3" class="empty-msg">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
+      <!-- 전 직업 극딜 / 평딜 판별기 -->
+      <details class="box left-collapsible" id="jobBurstClassifierCollapsible" open style="flex: 1; display: flex; flex-direction: column;">
+        <summary class="left-collapsible-summary" style="background: rgba(49, 130, 206, 0.18); border-bottom: 1px solid #2d3748;">
+          <div>
+            <span style="font-size: 13px; font-weight: bold; color: #90cdf4;">⚖️ 전 직업 극딜(≥50%) / 평딜 / 미분류 판별</span>
+            <span id="burstBaselineStatusText" class="sub-info" style="display: block; margin-top: 2px; color: #fbd38d;">
+              기준: 극딜 30초(-3~+27초) 귀속 비중 50%
+            </span>
+          </div>
+          <span class="sub-info">접기/펼치기 ▼</span>
+        </summary>
+
+        <div class="left-collapsible-body" style="display: flex; flex-direction: column; gap: 8px; flex: 1; overflow-y: auto;">
+          <div style="background: #141821; border: 1px solid #2d3748; border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <label for="baselineJobSelect" style="font-size: 11px; color: #cbd5e0;">🎯 기점:</label>
+                <select id="baselineJobSelect" style="font-size: 11px; padding: 2px 6px; background: #1a202c; color: #fff; border: 1px solid #4a5568; border-radius: 4px;">
+                  <option value="FIXED_50" selected>50% 공식 고정</option>
+                  <option value="렌">렌 (기점 연동)</option>
+                </select>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <label for="burstCutoffInput" style="font-size: 11px; color: #cbd5e0;">극딜 판정선:</label>
+                <input type="number" id="burstCutoffInput" value="50" min="10" max="95" step="0.5" style="width: 52px; text-align: right; font-size: 12px; font-weight: bold; color: #fbd38d;" />
+                <span style="font-size: 11px; color: #cbd5e0;">% 이상</span>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 11px; border-top: 1px solid #2d3748; padding-top: 5px;">
+              <label title="일반 액티브 및 짧쿨 5차 스킬 버프 배율">기본 버프배율: <input type="number" id="omegaBaseInput" value="1.75" step="0.05" min="1.0" max="3.0" style="width: 46px; text-align: right; font-size: 11px; color: #63b3ed;" /></label>
+              <label title="버프형 5차 직업 주력기 상향 배율">버프형 주력배율: <input type="number" id="omegaBuffClassInput" value="2.75" step="0.05" min="1.5" max="4.0" style="width: 46px; text-align: right; font-size: 11px; color: #f6ad55;" /></label>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #a0aec0; border-top: 1px solid #2d3748; padding-top: 5px;">
+              <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                <input type="checkbox" id="filterOnlyMyAccountJobsChk" />
+                <span>내 레벨 조건 보유 직업만 보기</span>
+              </label>
+              <span style="font-size: 10px; color: #68d391;">💾=수동저장 / ⚡=버프형보정</span>
+            </div>
+          </div>
+
+          <div class="role-group-card role-burst">
+            <div class="role-group-header">
+              <strong style="color: #fc8181; font-size: 12px;">🔥 극딜 직업 (귀속량 ≥ 기준%)</strong>
+              <span id="burstJobCountBadge" class="sub-info" style="color: #feb2b2;">0개 직업</span>
+            </div>
+            <div id="burstJobsContainer" class="role-pill-wrap"></div>
+          </div>
+
+          <div class="role-group-card role-sustained">
+            <div class="role-group-header">
+              <strong style="color: #63b3ed; font-size: 12px;">🔄 평딜(지속딜) 직업 (귀속량 &lt; 기준%)</strong>
+              <span id="sustainedJobCountBadge" class="sub-info" style="color: #90cdf4;">0개 직업</span>
+            </div>
+            <div id="sustainedJobsContainer" class="role-pill-wrap"></div>
+          </div>
+
+          <div class="role-group-card role-unclassified">
+            <div class="role-group-header">
+              <strong style="color: #a0aec0; font-size: 12px;">❓ 미분류 (연무장 기록 없음)</strong>
+              <span id="unclassifiedJobCountBadge" class="sub-info">0개 직업</span>
+            </div>
+            <div id="unclassifiedJobsContainer" class="role-pill-wrap"></div>
+          </div>
+        </div>
+      </details>
+
+      <!-- [배포용 필수 표기] NEXON Open API 출처 및 비공식 서비스 안내 푸터 -->
+      <footer class="nexon-attribution-box">
+        <div>This application is not associated with <strong>NEXON Korea</strong>.</div>
+        <div>Data based on <strong>NEXON Open API</strong>.</div>
+      </footer>
+    </div>
+
+    <!-- [중앙 메인 컬럼] -->
+    <section class="box large-box">
+      <div class="box-header bp-header" style="flex-wrap: wrap; gap: 10px;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <h2>⚔️ 연무장 공식 API 상세 분석 및 랭킹</h2>
+            <span id="seasonPeriodBadge" style="background: #2d3748; color: #63b3ed; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">
+              📅 기록 기간: 확인 중...
+            </span>
+            <span style="background: #1a202c; color: #a0aec0; border: 1px solid #2d3748; padding: 2px 7px; border-radius: 4px; font-size: 10px;">
+              Data based on NEXON Open API
+            </span>
+          </div>
+          <span id="selectedCharInfo" class="sub-info">스킬 행을 클릭하면 다중 선택(하이라이팅)되어 [극딜 딜량 %] 및 사용한 스킬 목록으로 직업별 저장이 가능합니다.</span>
+        </div>
+        
+        <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+          <div class="filter-item" style="margin: 0; min-width: 145px;">
+            <label for="seasonSelect">연무장 기수 (시즌)</label>
+            <div style="display: flex; gap: 4px;">
+              <select id="seasonSelect" style="flex: 1;"></select>
+              <button id="addSeasonBtn" class="btn-sub" type="button" style="padding: 0 8px; white-space: nowrap;">+ 기수 추가</button>
+            </div>
+          </div>
+
+          <div class="filter-item" style="max-width: 165px; margin: 0;">
+            <label for="rankJobFilter">직업 선택</label>
+            <select id="rankJobFilter">
+              <option value="ALL">전체 직업 보기</option>
+            </select>
+          </div>
+
+          <button id="toggleExtensionBtn" class="btn-primary" type="button" style="height: 32px; padding: 0 10px; font-size: 12px; white-space: nowrap;">
+            ⚡ 확장창 닫기 ◀
+          </button>
+        </div>
+      </div>
+
+      <div class="bp-mode-bar">
+        <div class="tab-buttons">
+          <button id="modeChuchuRank" class="tab-btn active" type="button">🏆 직업별 평균 랭킹 (<span id="totalRecordBadge">0</span>건)</button>
+          <button id="modeAllRecords" class="tab-btn" type="button">👥 개별 캐릭터 목록</button>
+          <button id="modeTop20Skills" class="tab-btn" type="button">🔥 평균 스킬 사용 TOP 20</button>
+          <button id="modeSingleDetail" class="tab-btn" type="button">📊 선택 캐릭터 상세 스킬</button>
+        </div>
+      </div>
+
+      <div id="chuchuRankView" class="bp-view-container">
+        <div class="scroll-area">
+          <table class="data-table chuchu-table">
+            <thead>
+              <tr>
+                <th style="width: 50px;">순위</th>
+                <th>직업 (30초 극딜비중)</th>
+                <th>대표 닉네임</th>
+                <th>평균 DPS</th>
+                <th>평균 전투력</th>
+                <th>효율(DPS/전투력)</th>
+                <th>기록 수</th>
+              </tr>
+            </thead>
+            <tbody id="chuchuRankBody">
+              <tr><td colspan="7" class="empty-msg">캐릭터를 조회하면 직업별 랭킹 데이터가 누적됩니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="allRecordsView" class="bp-view-container hidden">
+        <div class="scroll-area">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width: 50px;">순위</th>
+                <th>닉네임</th>
+                <th>직업 및 레벨</th>
+                <th>DPS</th>
+                <th>전투력</th>
+                <th>효율(DPS/전투력)</th>
+                <th>측정/수집일</th>
+              </tr>
+            </thead>
+            <tbody id="allRecordsBody">
+              <tr><td colspan="7" class="empty-msg">조회된 기록이 없습니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="top20SkillsView" class="bp-view-container hidden">
+        <div class="scroll-area">
+          <div style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+              <h3 style="margin: 0; color: #fff;">🔥 직업 평균 스킬 사용 TOP 20 <span style="font-size: 12px; color: #63b3ed; font-weight: normal; margin-left: 6px;">(💡 극딜 스킬을 클릭해 선택한 뒤 직업별 극딜 딜량 %로 저장하세요)</span></h3>
+              <button id="clearTop20SelectionBtn" class="btn-sub" type="button" style="padding: 4px 10px; font-size: 11px;">선택 초기화</button>
+            </div>
+
+            <div id="top20BurstSaveBanner" class="burst-save-line-box" style="margin-bottom: 10px;"></div>
+
+            <table class="data-table sortable-table">
+              <thead>
+                <tr>
+                  <th style="width: 55px;">순위</th>
+                  <th>스킬명 (클릭하여 선택/해제)</th>
+                  <th>평균 사용 횟수</th>
+                  <th>평균 딜 점유율 (%)</th>
+                </tr>
+              </thead>
+              <tbody id="top20SkillsBody">
+                <tr><td colspan="4" class="empty-msg">데이터가 누적되면 평균 스킬 상위 20개가 출력됩니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="top20TimelineSection" style="margin-top: 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+              <div>
+                <h3 style="color: #fff; margin: 0;">⏱️ 평균 스킬 사용 타임라인 상세 (평균치 도표)</h3>
+                <span id="top20SelectedSummary" class="sub-info" style="color: #63b3ed;">위 표나 아래 타임라인에서 스킬을 클릭해 선택해보세요.</span>
+              </div>
+              <div class="filter-item" style="max-width: 160px; margin: 0;">
+                <label for="top20TimelineIntervalSelect" style="font-size: 11px;">구간 단위</label>
+                <select id="top20TimelineIntervalSelect">
+                  <option value="30" selected>30초 구간</option>
+                  <option value="60">60초 구간</option>
+                  <option value="120">120초 구간</option>
+                  <option value="360">360초 구간 (전체)</option>
+                </select>
+              </div>
+            </div>
+            <div id="top20TimelineAccordionContainer"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="singleDetailView" class="bp-view-container hidden">
+        <div class="bp-summary-grid">
+          <div class="stat-card">
+            <span class="label">캐릭터 / 직업</span>
+            <strong class="value" id="cardCharJob">-</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">초당 데미지 (DPS)</span>
+            <strong class="value blue-text" id="cardDps">-</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">입장 전투력</span>
+            <strong class="value" id="cardCombatPower">-</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">효율 (DPS / 전투력)</span>
+            <strong class="value accent" id="cardEfficiency">-</strong>
+          </div>
+        </div>
+
+        <div class="scroll-area">
+          <div style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <h3 style="margin: 0; color: #fff;">📌 전체 누적 스킬 통계 & 30초 극딜 귀속량</h3>
+              <span id="detailRecordDateInfo" class="sub-info">-</span>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>스킬명 (클릭 시 선택)</th>
+                  <th>분류</th>
+                  <th>시전 (극딜30초 / 평딜90초)</th>
+                  <th>버프 배율</th>
+                  <th style="width: 140px;">전체 점유율</th>
+                  <th>30초 극딜 귀속량</th>
+                </tr>
+              </thead>
+              <tbody id="bpSkillTableBody">
+                <tr><td colspan="6" class="empty-msg">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="timelineSection" style="margin-top: 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <h3 style="color: #fff; margin: 0;">⏱️ 스킬 사용 타임라인 상세</h3>
+                <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; color: #a0aec0; cursor: pointer;">
+                  <input type="checkbox" id="hideBuffsInMainTimelineChk" checked />
+                  <span>버프/시드링 분리(숨김)</span>
+                </label>
+              </div>
+              
+              <div style="display: flex; gap: 10px; align-items: flex-end;">
+                <div class="filter-item" style="position: relative; margin: 0; min-width: 180px;">
+                  <label style="font-size: 11px; display: block; margin-bottom: 4px;">스킬 선택 (다중)</label>
+                  <button id="timelineSkillDropdownBtn" type="button" style="width: 100%; background: #1a202c; color: #fff; border: 1px solid #4a5568; padding: 6px 10px; border-radius: 4px; text-align: left; cursor: pointer; font-size: 12px;">
+                    전체 스킬 (선택 없음)
+                  </button>
+                  <div id="timelineSkillDropdownContent" style="display: none; position: absolute; right: 0; top: 100%; margin-top: 4px; background: #1a202c; border: 1px solid #4a5568; border-radius: 4px; z-index: 100; min-width: 240px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);"></div>
+                </div>
+
+                <div class="filter-item" style="max-width: 160px; margin: 0;">
+                  <label for="timelineIntervalSelect" style="font-size: 11px;">구간 단위</label>
+                  <select id="timelineIntervalSelect">
+                    <option value="30" selected>30초 구간</option>
+                    <option value="60">60초 구간</option>
+                    <option value="120">120초 구간</option>
+                    <option value="360">360초 구간 (전체)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div id="timelineAccordionContainer"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- [우측 확장 컬럼] -->
+    <aside class="box extension-box" id="rightExtensionBox">
+      <div class="box-header" style="border-bottom: 1px solid #2d3748; padding-bottom: 8px; margin-bottom: 8px;">
+        <div>
+          <h2>⚡ 30초 극딜 귀속 분석 & 실전 보스 딜 계산기</h2>
+          <span class="sub-info" id="extTargetCharLabel">상단 타이틀을 클릭해 각 메뉴를 접거나 펼칠 수 있습니다.</span>
+        </div>
+      </div>
+
+      <div class="scroll-area" style="display: flex; flex-direction: column; gap: 10px; padding-right: 4px;">
+        
+        <details class="ext-collapsible">
+          <summary class="ext-summary">
+            <span>🛡️ 분리된 버프 / 시드링 목록 (클릭 시 트리거 설정)</span>
+            <span id="buffCountBadge" class="sub-info">0개 ▼</span>
+          </summary>
+          <div class="ext-collapsible-body">
+            <div style="font-size: 11px; color: #a0aec0; margin-bottom: 6px;">
+              💡 공격 스킬이 섞여 있다면 알약 우측의 <strong>[⚔️공격전환]</strong>을 눌러 즉시 보정하세요.
+            </div>
+            <div id="separatedBuffListContainer" class="buff-pill-container"></div>
+          </div>
+        </details>
+
+        <details class="ext-collapsible">
+          <summary class="ext-summary">
+            <span>🗂️ 스킬 분류 DB & 수동 보정 (공격·버프·소환·설치)</span>
+            <span id="skillDbCountBadge" class="sub-info">열기 ▼</span>
+          </summary>
+          <div class="ext-collapsible-body">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;">
+              <button id="fetchApiSkillMetaBtn" type="button" class="btn-primary" style="font-size: 11px; padding: 4px 10px;">
+                📥 1단계: 스킬 설명 및 6차 조각수 수집
+              </button>
+              <select id="skillDbCategoryFilter" style="font-size: 11px; padding: 3px 6px; width: 120px;">
+                <option value="ALL">전체 분류 보기</option>
+                <option value="공격">⚔️ 공격</option>
+                <option value="버프">🛡️ 버프</option>
+                <option value="시드링">💍 시드링</option>
+                <option value="소환">👻 소환</option>
+                <option value="설치">📍 설치</option>
+              </select>
+            </div>
+            <div style="max-height: 200px; overflow-y: auto; border: 1px solid #2d3748; border-radius: 4px;">
+              <table class="data-table ext-table" style="font-size: 12px;">
+                <thead>
+                  <tr>
+                    <th>스킬명</th>
+                    <th style="width: 65px;">차수</th>
+                    <th style="width: 110px;">분류 (수동보정)</th>
+                  </tr>
+                </thead>
+                <tbody id="skillClassifierTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+
+        <details class="ext-collapsible" open>
+          <summary class="ext-summary">
+            <span>📊 30초 극딜 구간(-3초~+27초) 스킬 분석</span>
+            <span class="sub-info">접기/펼치기 ▼</span>
+          </summary>
+          <div class="ext-collapsible-body">
+            <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px;">
+              <div class="filter-item" style="flex: 1.2; min-width: 155px; margin: 0;">
+                <label for="burstTriggerSkillSelect" style="font-size: 11px;">🎯 발동 기준 스킬</label>
+                <select id="burstTriggerSkillSelect" style="font-size: 12px;"></select>
+              </div>
+
+              <div class="filter-item" style="width: 90px; margin: 0;">
+                <label for="burstWindowSecInput" style="font-size: 11px;">⏱️ 극딜 폭</label>
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <input type="number" id="burstWindowSecInput" value="30" min="5" max="120" step="1" style="width: 52px; text-align: center; font-size: 12px;" />
+                  <span style="font-size: 12px; color: #cbd5e0;">초</span>
+                </div>
+              </div>
+
+              <div class="filter-item" style="flex: 1; min-width: 155px; margin: 0;">
+                <label for="burstRoundSelect" style="font-size: 11px; color: #63b3ed;">🔄 발동 회차 선택</label>
+                <select id="burstRoundSelect" style="font-size: 12px; border-color: #3182ce;">
+                  <option value="ALL">🔥 전체 주기 합산</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;">
+              <button type="button" class="btn-sub burst-preset-btn" data-sec="15" style="font-size: 11px; padding: 3px 10px;">15초</button>
+              <button type="button" class="btn-sub burst-preset-btn" data-sec="20" style="font-size: 11px; padding: 3px 10px;">20초</button>
+              <button type="button" class="btn-sub burst-preset-btn active-preset" data-sec="30" style="font-size: 11px; padding: 3px 10px;">30초 (표준: -3초~+27초)</button>
+            </div>
+
+            <div id="burstSummaryContainer" style="margin-bottom: 6px;"></div>
+            <div id="extBurstSkillSaveLine" class="burst-save-line-box" style="margin-bottom: 10px;"></div>
+            <div id="burstWindowsAccordionContainer"></div>
+          </div>
+        </details>
+
+        <details class="ext-collapsible" open>
+          <summary class="ext-summary" style="background: rgba(237, 137, 54, 0.18); border-color: #dd6b20;">
+            <span style="color: #fbd38d;">🧮 연무장(풀강) × 다조 헥환보정 & 실전 보스 클리어 계산기</span>
+            <span class="sub-info" style="color: #f6ad55;">실전 역산 적용 ▼</span>
+          </summary>
+          <div class="ext-collapsible-body">
+            <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; flex-wrap: wrap;">
+              <div class="filter-item" style="flex: 1.3; min-width: 170px; margin: 0;">
+                <label for="calcJobPresetSelect" style="font-size: 11px;">대상 직업 (100% 풀강 기준)</label>
+                <select id="calcJobPresetSelect" style="font-size: 12px;"></select>
+              </div>
+              <div class="filter-item" style="width: 110px; margin: 0;">
+                <label for="calcFullPInput" style="font-size: 11px; color: #f6ad55;">100% 풀강 지수</label>
+                <input type="number" id="calcFullPInput" value="819.5" step="0.1" style="width: 100%; text-align: right; font-weight: bold; color: #f6ad55; font-size: 13px;" />
+              </div>
+              <div class="filter-item" style="width: 110px; margin: 0;">
+                <label for="calcBasePInput" style="font-size: 11px; color: #63b3ed;">1렙 기본값</label>
+                <input type="number" id="calcBasePInput" value="475.5" step="0.1" style="width: 100%; text-align: right; font-weight: bold; color: #63b3ed; font-size: 13px;" />
+              </div>
+              <button id="applyHeroCalibrationBtn" type="button" class="btn-sub" style="height: 30px; padding: 0 10px; font-size: 11px; border-color: #f6ad55; color: #fbd38d; white-space: nowrap;">
+                🎯 히어로 복원
+              </button>
+            </div>
+
+            <div id="calcBpSyncInfo" style="background: #141821; border: 1px solid #2d3748; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #cbd5e0; margin-bottom: 10px;">
+              📊 연무장 DB 연동 대기 중...
+            </div>
+
+            <div style="margin-bottom: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+                <span style="font-size: 11px; color: #a0aec0;">💎 조각 수준 빠른 적용</span>
+                <span id="calcHexaRateBadge" style="font-size: 12px; font-weight: bold; color: #4fd1c5;">헥환보정치: -%</span>
+              </div>
+              <div id="calcFragTierButtons" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px;"></div>
+            </div>
+
+            <table class="data-table ext-table" style="font-size: 12px; margin-bottom: 10px;">
+              <thead>
+                <tr>
+                  <th>모델 구분</th>
+                  <th>강화 / 다조 입력</th>
+                  <th>보정치</th>
+                  <th>예상전투력</th>
+                  <th>실전지수</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <strong style="color: #f687b3; font-size: 12px;">① 강화수치 모델</strong>
+                    <span style="display: block; font-size: 10px; color: #a0aec0;">기본값 + 강화×12</span>
+                  </td>
+                  <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <label style="font-size: 10px;">강화:<input type="number" id="calcQ2Input" value="4" style="width: 45px; text-align: right;" /></label>
+                      <label style="font-size: 10px;">솔수치:<input type="number" id="calcT2Input" value="120" style="width: 45px; text-align: right;" /></label>
+                    </div>
+                  </td>
+                  <td id="calcU2Output" style="color: #cbd5e0;">0.05</td>
+                  <td><strong id="calcR2Output" style="color: #fff;">-</strong></td>
+                  <td><strong id="calcS2Output" style="color: #63b3ed;">-</strong></td>
+                </tr>
+                <tr style="background: rgba(49, 130, 206, 0.14);">
+                  <td>
+                    <strong style="color: #4fd1c5; font-size: 12px;">② 다조 헥환보정</strong>
+                    <span style="display: block; font-size: 10px; color: #a0aec0;">풀강 × 헥환보정%</span>
+                  </td>
+                  <td>
+                    <label style="font-size: 10px;">사용조각:<input type="number" id="calcQ3Input" value="5656" step="50" style="width: 72px; text-align: right; font-weight: bold; color: #fbd38d;" /></label>
+                  </td>
+                  <td id="calcU3Output" style="color: #f6ad55; font-weight: bold;">-</td>
+                  <td><strong id="calcR3Output" style="color: #fff;">-</strong></td>
+                  <td><strong id="calcS3Output" style="color: #4fd1c5;">-</strong></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style="background: #141821; border: 1px solid #3182ce; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;">
+              <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px;">
+                <div class="filter-item" style="margin: 0;">
+                  <label for="calcCharCpManInput" style="font-size: 10px; color: #cbd5e0;">입장 전투력(만)</label>
+                  <input type="number" id="calcCharCpManInput" value="10650" step="50" style="width: 100%; text-align: right; font-weight: bold; color: #fff;" />
+                  <span id="calcCharCpKoreanLabel" style="font-size: 9px; color: #63b3ed; display: block; text-align: right;">1억 650만</span>
+                </div>
+                <div class="filter-item" style="margin: 0;">
+                  <label for="calcForceMultInput" style="font-size: 10px; color: #cbd5e0;">포스배율(%)</label>
+                  <input type="number" id="calcForceMultInput" value="132" step="1" style="width: 100%; text-align: right; font-weight: bold; color: #f6ad55;" />
+                  <span style="font-size: 9px; color: #a0aec0; display: block; text-align: right;">132% (×1.32)</span>
+                </div>
+                <div class="filter-item" style="margin: 0;">
+                  <label for="calcBossHpJoInput" style="font-size: 10px; color: #cbd5e0;">보스체력(조)</label>
+                  <input type="number" id="calcBossHpJoInput" value="779" step="10" style="width: 100%; text-align: right; font-weight: bold; color: #fc8181;" />
+                  <span style="font-size: 9px; color: #a0aec0; display: block; text-align: right;">779조</span>
+                </div>
+                <div class="filter-item" style="margin: 0;">
+                  <label for="calcRealFactorInput" style="font-size: 10px; color: #cbd5e0;">실전보정비율</label>
+                  <input type="number" id="calcRealFactorInput" value="0.70" step="0.01" style="width: 100%; text-align: right; font-weight: bold; color: #4fd1c5;" />
+                  <span style="font-size: 9px; color: #a0aec0; display: block; text-align: right;">실전 70%</span>
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #1a202c; padding: 8px 10px; border-radius: 6px; border: 1px solid #2d3748;">
+                <div>
+                  <span style="font-size: 10px; color: #a0aec0; display: block;">⚡ 예상 실전 보스 DPS</span>
+                  <strong id="calcRealBossDpsOutput" style="font-size: 13px; color: #4fd1c5; display: block;">-</strong>
+                  <span id="calcPureBossDpsOutput" style="font-size: 10px; color: #cbd5e0; display: block;">포스 100%: -</span>
+                </div>
+                <div>
+                  <span style="font-size: 10px; color: #a0aec0; display: block;">⏱️ 예상 클리어 타임</span>
+                  <strong id="calcClearTimeOutput" style="font-size: 13px; color: #fbd38d; display: block;">-</strong>
+                  <span id="calc18MinTotalOutput" style="font-size: 10px; color: #cbd5e0; display: block;">18분 누적: -</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </details>
+
+      </div>
+    </aside>
+
+  </div>
+
+  <style>
+    .anchor-layout {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: stretch !important;
+      gap: 12px !important;
+      width: 100% !important;
+      height: 100vh !important;
+      padding: 12px !important;
+      box-sizing: border-box !important;
+      overflow-x: auto !important;
+    }
+    .left-column {
+      width: 365px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      height: 100%;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+    .nexon-attribution-box {
+      flex-shrink: 0;
+      background: #141821;
+      border: 1px solid #2d3748;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 10px;
+      color: #718096;
+      text-align: center;
+      line-height: 1.4;
+      user-select: none;
+    }
+    .nexon-attribution-box strong {
+      color: #a0aec0;
+    }
+    .large-box {
+      flex: 1.05;
+      min-width: 480px;
+      display: flex;
+      flex-direction: column;
+    }
+    .extension-box {
+      flex: 0.95;
+      min-width: 590px;
+      display: flex;
+      flex-direction: column;
+      background: #141821;
+      border: 1px solid #2d3748;
+      border-radius: 8px;
+      padding: 12px 14px;
+      transition: flex 0.2s ease, opacity 0.2s ease;
+    }
+    .extension-box.collapsed { display: none !important; }
+    .burst-save-line-box {
+      background: rgba(49, 130, 206, 0.14);
+      border: 1px solid #3182ce;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+    .burst-metric-chip {
+      background: #141821;
+      border: 1px solid #4a5568;
+      color: #cbd5e0;
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 10px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .burst-metric-chip:hover { border-color: #63b3ed; }
+    .burst-metric-chip.active-chip { background: #2b6cb0; border-color: #90cdf4; color: #fff; font-weight: bold; }
+    .saved-skill-tag {
+      display: inline-block; background: #1a202c; border: 1px solid #4a5568; color: #90cdf4;
+      border-radius: 4px; padding: 1px 6px; font-size: 10px; margin: 2px 3px 2px 0; white-space: nowrap;
+    }
+    .left-collapsible { padding: 0 !important; overflow: hidden; flex-shrink: 0; }
+    .left-collapsible-summary {
+      list-style: none; display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; cursor: pointer; user-select: none; background: #1a202c;
+    }
+    .left-collapsible-summary::-webkit-details-marker { display: none; }
+    .left-collapsible[open] > .left-collapsible-summary { border-bottom: 1px solid #2d3748; }
+    .left-collapsible-body { padding: 10px 12px; }
+    .role-group-card { background: #141821; border: 1px solid #2d3748; border-radius: 6px; padding: 8px 10px; }
+    .role-group-card.role-burst { border-left: 3px solid #e53e3e; }
+    .role-group-card.role-sustained { border-left: 3px solid #3182ce; }
+    .role-group-card.role-unclassified { border-left: 3px solid #718096; }
+    .role-group-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .role-pill-wrap { display: flex; flex-wrap: wrap; gap: 5px; }
+    .job-role-pill {
+      display: inline-flex; align-items: center; gap: 4px; background: #1a202c; border: 1px solid #4a5568;
+      color: #e2e8f0; border-radius: 12px; padding: 3px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; transition: all 0.15s ease;
+    }
+    .job-role-pill:hover { border-color: #63b3ed; background: #2b4c7e; }
+    .job-role-pill.owned-job-pill { border-color: #48bb78 !important; background: rgba(72, 187, 120, 0.16) !important; color: #fff !important; font-weight: bold; }
+    .job-role-pill.baseline-job-pill { border-color: #f6ad55 !important; box-shadow: 0 0 6px rgba(246, 173, 85, 0.45); }
+    .ext-table th, .ext-table td { word-break: keep-all; white-space: nowrap; vertical-align: middle; }
+    .ext-collapsible { background: #1a202c; border: 1px solid #2d3748; border-radius: 6px; overflow: hidden; }
+    .ext-summary {
+      list-style: none; display: flex; justify-content: space-between; align-items: center;
+      padding: 9px 12px; background: #222938; color: #fff; font-size: 13px; font-weight: bold; cursor: pointer; user-select: none; border-bottom: 1px solid transparent;
+    }
+    .ext-summary::-webkit-details-marker { display: none; }
+    .ext-collapsible[open] > .ext-summary { border-bottom-color: #2d3748; }
+    .ext-collapsible-body { padding: 12px; }
+    .buff-pill-container { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow-y: auto; }
+    .buff-pill {
+      display: inline-flex; align-items: center; gap: 6px; background: #2d3748; color: #e2e8f0;
+      border: 1px solid #4a5568; border-radius: 14px; padding: 4px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; transition: all 0.15s ease;
+    }
+    .buff-pill:hover { border-color: #63b3ed; background: #2b4c7e; }
+    .buff-pill.active-trigger { background: #3182ce; border-color: #90cdf4; color: #fff; font-weight: bold; }
+    .pill-reclassify-btn {
+      background: rgba(0, 0, 0, 0.35); color: #feb2b2; border: none; border-radius: 8px; padding: 2px 6px; font-size: 10px; cursor: pointer; margin-left: 2px;
+    }
+    .pill-reclassify-btn:hover { background: #e53e3e; color: #fff; }
+    .burst-preset-btn.active-preset, .frag-tier-btn.active-tier {
+      background: #3182ce !important; color: #fff !important; border-color: #63b3ed !important;
+    }
+    .frag-tier-btn {
+      background: #141821; border: 1px solid #4a5568; color: #cbd5e0; border-radius: 4px;
+      padding: 6px 4px; font-size: 11px; cursor: pointer; text-align: center; line-height: 1.3; white-space: nowrap;
+    }
+    .frag-tier-btn:hover { border-color: #63b3ed; }
+    .cat-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; white-space: nowrap; }
+    .cat-공격 { background: rgba(229, 62, 62, 0.2); color: #fc8181; border: 1px solid rgba(229, 62, 62, 0.4); }
+    .cat-버프 { background: rgba(49, 130, 206, 0.2); color: #63b3ed; border: 1px solid rgba(49, 130, 206, 0.4); }
+    .cat-시드링 { background: rgba(214, 158, 46, 0.25); color: #f6e05e; border: 1px solid rgba(214, 158, 46, 0.5); }
+    .cat-소환 { background: rgba(128, 90, 213, 0.25); color: #b794f4; border: 1px solid rgba(128, 90, 213, 0.5); }
+    .cat-설치 { background: rgba(49, 151, 149, 0.25); color: #4fd1c5; border: 1px solid rgba(49, 151, 149, 0.5); }
+    #timelineSkillDropdownContent.show { display: block !important; }
+    .skill-selectable-row { cursor: pointer; transition: background-color 0.15s ease; }
+    .skill-selectable-row:hover { background-color: rgba(255, 255, 255, 0.06); }
+    .skill-selectable-row.selected-skill-row {
+      background-color: rgba(49, 130, 206, 0.28) !important;
+      border-left: 3px solid #3182ce;
+    }
+  </style>
+
+  <script src="./app.js"></script>
+</body>
+</html>
