@@ -16,6 +16,9 @@
       "index.html",
       "app.js",
       "style.css",
+      "job_utility_db.js",
+      "simulator.html",
+      "simulator.js",
       "maple_local_db.json",
       "package.json"
     ],

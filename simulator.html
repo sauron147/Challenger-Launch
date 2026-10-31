@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>직업 추천 & 스펙 시뮬레이터</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #11151e;
+      color: #e2e8f0;
+      font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #2d3748;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* 메이플 외부 채팅창 스타일 드래그 타이틀바 */
+    .chat-titlebar {
+      -webkit-app-region: drag;
+      height: 32px;
+      background: linear-gradient(180deg, #242b38 0%, #171c26 100%);
+      border-bottom: 1px solid #2d3748;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 10px;
+      flex-shrink: 0;
+    }
+    .title-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: bold;
+      color: #fbd38d;
+      letter-spacing: 0.3px;
+    }
+    .title-controls {
+      -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .bar-btn {
+      background: #1a202c;
+      border: 1px solid #4a5568;
+      color: #cbd5e0;
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .bar-btn:hover { border-color: #63b3ed; color: #fff; }
+    .bar-btn.active-snap {
+      background: rgba(72, 187, 120, 0.2);
+      border-color: #48bb78;
+      color: #68d391;
+      font-weight: bold;
+    }
+    .bar-btn.active-pin {
+      background: rgba(237, 137, 54, 0.25);
+      border-color: #ed8936;
+      color: #fbd38d;
+    }
+
+    /* 메이플 외부 채팅창 탭 바 스타일 */
+    .chat-tab-bar {
+      display: flex;
+      background: #171c26;
+      border-bottom: 1px solid #2d3748;
+      padding: 4px 8px 0 8px;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .chat-tab {
+      background: #1f2735;
+      color: #a0aec0;
+      border: 1px solid #2d3748;
+      border-bottom: none;
+      border-radius: 5px 5px 0 0;
+      padding: 5px 12px;
+      font-size: 11px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .chat-tab.active {
+      background: #11151e;
+      color: #fff;
+      border-top: 2px solid #f6ad55;
+    }
+
+    /* 상단 스펙 & 유틸 필터 패널 */
+    .filter-panel {
+      background: #161b26;
+      border-bottom: 1px solid #2d3748;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .spec-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .spec-box {
+      background: #11151e;
+      border: 1px solid #2d3748;
+      border-radius: 4px;
+      padding: 4px 6px;
+    }
+    .spec-box label {
+      display: block;
+      font-size: 10px;
+      color: #a0aec0;
+      margin-bottom: 2px;
+    }
+    .spec-box input, .spec-box select {
+      width: 100%;
+      background: #1a202c;
+      border: 1px solid #4a5568;
+      color: #fff;
+      border-radius: 3px;
+      padding: 3px 5px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .frag-quick-row {
+      display: flex;
+      gap: 4px;
+    }
+    .frag-chip {
+      flex: 1;
+      background: #1a202c;
+      border: 1px solid #2d3748;
+      color: #cbd5e0;
+      border-radius: 3px;
+      padding: 3px 2px;
+      font-size: 10px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .frag-chip:hover, .frag-chip.active {
+      background: #2b6cb0;
+      border-color: #63b3ed;
+      color: #fff;
+      font-weight: bold;
+    }
+
+    /* 결과 리스트 영역 (채팅 로그처럼 스크롤) */
+    .result-scroll-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .job-sim-card {
+      background: #181e2c;
+      border: 1px solid #2d3748;
+      border-left: 3px solid #4a5568;
+      border-radius: 5px;
+      padding: 7px 9px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .job-sim-card:hover {
+      background: #20293d;
+      border-color: #63b3ed;
+    }
+    .job-sim-card.burst-card { border-left-color: #fc8181; }
+    .job-sim-card.sustained-card { border-left-color: #63b3ed; }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .job-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .rank-num {
+      background: #2d3748;
+      color: #fbd38d;
+      font-size: 10px;
+      font-weight: bold;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .job-name {
+      font-size: 13px;
+      font-weight: bold;
+      color: #fff;
+    }
+    .dps-val {
+      font-size: 12px;
+      font-weight: bold;
+      color: #4fd1c5;
+    }
+    .card-mid {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #cbd5e0;
+      margin-bottom: 4px;
+    }
+    .card-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      font-size: 10px;
+    }
+    .util-badge {
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: #11151e;
+      border: 1px solid #2d3748;
+      color: #a0aec0;
+    }
+    .util-badge.iframe-ok {
+      color: #fbd38d;
+      border-color: rgba(246, 173, 85, 0.4);
+      background: rgba(237, 137, 54, 0.12);
+    }
+    .util-badge.bind-ok {
+      color: #9ae6b4;
+      border-color: rgba(72, 187, 120, 0.4);
+    }
+    .util-badge.cast-badge {
+      color: #90cdf4;
+      border-color: rgba(99, 179, 237, 0.35);
+    }
+
+    .sim-footer {
+      background: #151922;
+      border-top: 1px solid #2d3748;
+      padding: 5px 10px;
+      font-size: 10px;
+      color: #718096;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- 1. 외부 채팅창 스타일 상단 드래그 바 -->
+  <header class="chat-titlebar">
+    <div class="title-left">
+      <span>🍁 MAPLESTORY SIMULATOR</span>
+    </div>
+    <div class="title-controls">
+      <button id="snapStateBtn" class="bar-btn active-snap" type="button" title="클릭하면 메인 창 우측에 즉시 자석처럼 다시 붙습니다">🧲 자석 붙음</button>
+      <button id="alwaysOnTopBtn" class="bar-btn" type="button" title="창을 항상 맨 위에 고정합니다">📌 항상 위</button>
+      <button id="minWinBtn" class="bar-btn" type="button">_</button>
+      <button id="closeWinBtn" class="bar-btn" type="button">✕</button>
+    </div>
+  </header>
+
+  <!-- 2. 상단 탭 바 -->
+  <nav class="chat-tab-bar">
+    <button id="tabSimResult" class="chat-tab active" type="button">🏆 스펙별 딜 & 직업 추천</button>
+    <button id="tabUtilEdit" class="chat-tab" type="button">🛡️ 무적기 쿨타임 DB 설정</button>
+  </nav>
+
+  <!-- [뷰 1] 스펙 시뮬레이터 & 직업 추천 결과창 -->
+  <div id="simResultView" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+    <section class="filter-panel">
+      <div class="spec-grid">
+        <div class="spec-box">
+          <label>입장 전투력 (만 단위)</label>
+          <input type="number" id="simCpManInput" value="10650" step="100" />
+          <span id="simCpKoreanText" style="font-size: 9px; color: #63b3ed;">1억 650만</span>
+        </div>
+        <div class="spec-box">
+          <label>6차 조각 사용량</label>
+          <input type="number" id="simFragInput" value="5656" step="100" min="0" max="45000" />
+          <span style="font-size: 9px; color: #f6ad55;">직업별 헥환 자동보정</span>
+        </div>
+        <div class="spec-box">
+          <label>목표 보스 체력 (조)</label>
+          <input type="number" id="simBossHpJoInput" value="779" step="10" />
+          <span style="font-size: 9px; color: #fc8181;">포스 132% · 실전 70%</span>
+        </div>
+      </div>
+
+      <!-- 조각 프리셋 칩 -->
+      <div class="frag-quick-row">
+        <button type="button" class="frag-chip" data-frag="0">0조각(1렙)</button>
+        <button type="button" class="frag-chip" data-frag="2000">2천개</button>
+        <button type="button" class="frag-chip active" data-frag="5656">본캐(5656)</button>
+        <button type="button" class="frag-chip" data-frag="10000">1만개</button>
+        <button type="button" class="frag-chip" data-frag="20000">2만개</button>
+        <button type="button" class="frag-chip" data-frag="40000">4만(풀강)</button>
+      </div>
+
+      <!-- 추천 조건 필터 (딜 성향 / 무적기 쿨타임 / 정렬 기준) -->
+      <div class="spec-grid" style="margin-top: 2px;">
+        <div class="spec-box">
+          <label>⚡ 딜 구조 성향</label>
+          <select id="simRoleFilter">
+            <option value="ALL">전체 (극딜+평딜)</option>
+            <option value="BURST">🔥 극딜 직업 (50%↑)</option>
+            <option value="SUSTAINED">🔄 평딜 직업 (50%↓)</option>
+          </select>
+        </div>
+        <div class="spec-box">
+          <label>🛡️ 무적기 쿨타임 조건</label>
+          <select id="simIframeFilter">
+            <option value="ALL">무적기 무관 (전체)</option>
+            <option value="HAS_IFRAME">무적기 보유 필수</option>
+            <option value="45">쿨 45초 이하 (극생존)</option>
+            <option value="60">쿨 60초 이하 (안정)</option>
+            <option value="90">쿨 90초 이하</option>
+            <option value="120">쿨 120초 이하</option>
+          </select>
+        </div>
+        <div class="spec-box">
+          <label>📊 정렬 기준</label>
+          <select id="simSortSelect">
+            <option value="DPS_DESC">예상 실전 딜량 높은순</option>
+            <option value="BURST_DESC">30초 극딜 비중 높은순</option>
+            <option value="CAST_DESC">스킬 사용 횟수 많은순</option>
+            <option value="CAST_ASC">스킬 사용 횟수 적은순(편함)</option>
+            <option value="IFRAME_ASC">무적기 쿨타임 짧은순</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <!-- 결과 리스트 -->
+    <div id="simCardsContainer" class="result-scroll-area"></div>
+  </div>
+
+  <!-- [뷰 2] 무적기 쿨타임 DB 커스텀 편집 뷰 -->
+  <div id="utilEditView" class="result-scroll-area hidden">
+    <div style="font-size: 11px; color: #a0aec0; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+      <span>💡 직업별 무적기 쿨타임(초)과 스킬명을 내 기준에 맞게 수정할 수 있습니다.</span>
+      <button id="resetUtilDbBtn" class="bar-btn" type="button">기본값 복원</button>
+    </div>
+    <div id="utilEditListContainer" style="display: flex; flex-direction: column; gap: 6px;"></div>
+  </div>
+
+  <!-- 하단 상태바 -->
+  <footer class="sim-footer">
+    <span id="simCountStatus">조건 부합: 0개 직업</span>
+    <span>카드 클릭 시 메인 창 상세 연동</span>
+  </footer>
+
+  <script src="./simulator.js"></script>
+</body>
+</html>
