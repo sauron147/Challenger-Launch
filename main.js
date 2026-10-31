@@ -14,10 +14,9 @@ const getWritableDbPath = () => {
 let mainWindow = null;
 let simWindow = null;
 
-// 자석 스냅(Snapping) 상태 관리 변수
 let isSnapped = true;
 let isProgrammaticMove = false;
-const SNAP_THRESHOLD = 28; // 메인 창 우측 경계와 28px 이내로 가까워지면 자석처럼 달라붙음
+const SNAP_THRESHOLD = 28;
 const SIM_WINDOW_WIDTH = 430;
 
 function syncSimulatorPosition() {
@@ -29,7 +28,7 @@ function syncSimulatorPosition() {
 
   isProgrammaticMove = true;
   simWindow.setBounds({
-    x: mainBounds.x + mainBounds.width - 2, // 메인 창 우측 테두리에 밀착
+    x: mainBounds.x + mainBounds.width - 2,
     y: mainBounds.y,
     width: simBounds.width || SIM_WINDOW_WIDTH,
     height: mainBounds.height
@@ -48,7 +47,7 @@ function createSimulatorWindow() {
     return;
   }
 
-  const mainBounds = mainWindow ? mainWindow.getBounds() : { x: 100, y: 100, width: 1500, height: 920 };
+  const mainBounds = mainWindow ? mainWindow.getBounds() : { x: 100, y: 100, width: 1520, height: 920 };
 
   simWindow = new BrowserWindow({
     x: mainBounds.x + mainBounds.width - 2,
@@ -57,7 +56,7 @@ function createSimulatorWindow() {
     height: mainBounds.height,
     minWidth: 380,
     minHeight: 520,
-    frame: false, // 메이플 외부 채팅창 스타일 프레임리스 창
+    frame: false,
     backgroundColor: '#11151e',
     alwaysOnTop: false,
     autoHideMenuBar: true,
@@ -69,7 +68,6 @@ function createSimulatorWindow() {
 
   simWindow.loadFile('simulator.html');
 
-  // 사용자가 시뮬레이터 창을 마우스로 드래그할 때 자석 탈부착 판정
   simWindow.on('move', () => {
     if (isProgrammaticMove || !mainWindow || mainWindow.isDestroyed()) return;
 
@@ -99,7 +97,7 @@ function createSimulatorWindow() {
   });
 }
 
-function createMainWindow() {
+function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1520,
     height: 920,
@@ -115,7 +113,6 @@ function createMainWindow() {
 
   mainWindow.loadFile('index.html');
 
-  // 메인 창 이동/크기 조절 시 자석처럼 붙어있는 시뮬레이터 창 동시 이동
   mainWindow.on('move', () => syncSimulatorPosition());
   mainWindow.on('resize', () => syncSimulatorPosition());
 
@@ -130,7 +127,6 @@ function createMainWindow() {
     }
   });
 
-  // 메인 창이 닫히면 전체 앱 종료
   mainWindow.on('closed', () => {
     mainWindow = null;
     if (simWindow && !simWindow.isDestroyed()) {
@@ -139,7 +135,6 @@ function createMainWindow() {
     app.quit();
   });
 
-  // index.html과 app.js를 건드리지 않고도 상단에 [🧭 시뮬레이터 창] 열기/닫기 버튼을 자동 주입
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.executeJavaScript(`
       (function() {
@@ -159,12 +154,10 @@ function createMainWindow() {
       })();
     `).catch(() => {});
 
-    // 메인 창 로드 완료 후 우측에 자석 시뮬레이터 창 자동 부착 실행
     createSimulatorWindow();
   });
 }
 
-// 로컬 DB 불러오기
 ipcMain.handle('load-local-db', async () => {
   try {
     const targetPath = getWritableDbPath();
@@ -190,7 +183,6 @@ ipcMain.handle('load-local-db', async () => {
   }
 });
 
-// 로컬 DB 저장하기 (저장 즉시 시뮬레이터 창에도 실시간 갱신 신호 전달)
 ipcMain.handle('save-local-db', async (event, payload) => {
   try {
     const targetPath = getWritableDbPath();
@@ -207,7 +199,6 @@ ipcMain.handle('save-local-db', async (event, payload) => {
   }
 });
 
-// 시뮬레이터 창 제어용 IPC 이벤트
 ipcMain.on('toggle-sim-window', () => {
   createSimulatorWindow();
 });
@@ -234,7 +225,6 @@ ipcMain.on('sim-window-close', () => {
   if (simWindow && !simWindow.isDestroyed()) simWindow.hide();
 });
 
-// 시뮬레이터에서 직업을 클릭했을 때 메인 대시보드의 해당 직업 상세 뷰로 연동
 ipcMain.on('sim-select-job-in-main', (event, jobName) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.executeJavaScript(`
@@ -250,10 +240,10 @@ ipcMain.on('sim-select-job-in-main', (event, jobName) => {
 });
 
 app.whenReady().then(() => {
-  createMainWindow();
+  createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
