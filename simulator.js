@@ -3,6 +3,11 @@ const {
   HERO_CALIBRATED_FULL_INDEX,
   HERO_BASELINE_DPM_JO,
   BP_EFF_TO_INDEX_DIVISOR,
+  STANDARD_ACTION_DELAY_MS,
+  MAX_CONTINUOUS_STD_ACTIONS_6M,
+  PASSIVE_PROC_SKILL_KEYWORDS,
+  KEYDOWN_SKILL_KEYWORDS,
+  calcMapleReducedCooldown,
   HEXA_FRAGMENT_TABLE,
   MASTER_JOB_LIST,
   DEFAULT_JOB_UTILITY_DB
@@ -34,11 +39,10 @@ function formatKoreanNumber(num) {
 
 class MapleSimulatorWindow {
   constructor() {
-    this.STORAGE_KEY_CUSTOM_UTIL = 'MAPLE_SIM_CUSTOM_UTIL_DB_V2';
+    this.STORAGE_KEY_CUSTOM_UTIL = 'MAPLE_SIM_CUSTOM_UTIL_DB_V3';
     this.localDbData = null;
     this.utilityDb = {};
     this.isAlwaysOnTop = false;
-    this.calibrationMode = 'STD_DPM'; // 'STD_DPM'(헥환 11만 체급 보정: 카데나 1위) 또는 'BP_EFF'(단순 전투력 나눗셈: 카이저 1위)
 
     this.cacheDom();
     this.loadUtilityDb();
@@ -62,21 +66,15 @@ class MapleSimulatorWindow {
     this.simFragInput = document.getElementById('simFragInput');
     this.simBossHpJoInput = document.getElementById('simBossHpJoInput');
 
+    this.simCoolHatSelect = document.getElementById('simCoolHatSelect');
+    this.simCdrWeightMode = document.getElementById('simCdrWeightMode');
+
     this.simRoleFilter = document.getElementById('simRoleFilter');
     this.simIframeFilter = document.getElementById('simIframeFilter');
     this.simSortSelect = document.getElementById('simSortSelect');
 
-    // 정렬 셀렉트 박스에 체급 보정 vs 전투력 효율 모드 옵션 보강
-    if (this.simSortSelect) {
-      this.simSortSelect.innerHTML = `
-        <option value="DPS_STD_DESC" selected>보정 체급 딜량순 (카데나 1위 기준)</option>
-        <option value="DPS_EFF_DESC">인게임 전투력 효율순 (카이저 1위 기준)</option>
-        <option value="BURST_DESC">30초 극딜 비중 높은순</option>
-        <option value="CAST_DESC">스킬 사용 횟수 많은순(바쁨)</option>
-        <option value="CAST_ASC">스킬 사용 횟수 적은순(편함)</option>
-        <option value="IFRAME_ASC">무적기 쿨타임 짧은순</option>
-      `;
-    }
+    this.chkFilterProc660 = document.getElementById('chkFilterProc660');
+    this.chkBase660Burst = document.getElementById('chkBase660Burst');
 
     this.simCardsContainer = document.getElementById('simCardsContainer');
     this.utilEditListContainer = document.getElementById('utilEditListContainer');
@@ -166,7 +164,70 @@ class MapleSimulatorWindow {
     return t40k[0];
   }
 
-  calcRecordBurstShare(rec) {
+  analyzeRecordActions660(rec) {
+    const skills = rec?.skills || [];
+    const timelines = rec?.timeline || [];
+    if (skills.length === 0) return null;
+
+    const timelineCountMap = new Map();
+    timelines.forEach(t => {
+      if (t && t.skill_name) {
+        timelineCountMap.set(t.skill_name, (timelineCountMap.get(t.skill_name) || 0) + 1);
+      }
+    });
+
+    const nonTimelineSkills = skills
+      .filter(s => !timelineCountMap.has(s.name) && (Number(s.useCount) || 0) > 30)
+      .sort((a, b) => (Number(b.rate) || 0) - (Number(a.rate) || 0));
+
+    const primaryMainSkillName = nonTimelineSkills.length > 0 ? nonTimelineSkills[0].name : null;
+
+    let effectiveActions = 0;
+    let passiveProcCasts = 0;
+    let rawTotalCasts = 0;
+
+    skills.forEach(sk => {
+      const name = sk.name || '';
+      const rawUse = Number(sk.useCount) || 0;
+      const rate = Number(sk.rate) || 0;
+      const tlUse = timelineCountMap.get(name) || 0;
+      rawTotalCasts += rawUse;
+
+      const isKnownProc = PASSIVE_PROC_SKILL_KEYWORDS.some(kw => name.includes(kw));
+      const isKnownKeydown = KEYDOWN_SKILL_KEYWORDS.some(kw => name.includes(kw));
+
+      if (isKnownProc) {
+        passiveProcCasts += rawUse;
+      } else if (isKnownKeydown || (tlUse > 0 && rawUse > tlUse * 8)) {
+        const normHoldActions = Math.max(tlUse, Math.round((rawUse * 132) / STANDARD_ACTION_DELAY_MS));
+        effectiveActions += Math.min(MAX_CONTINUOUS_STD_ACTIONS_6M, normHoldActions);
+        passiveProcCasts += Math.max(0, rawUse - normHoldActions);
+      } else if (name === primaryMainSkillName) {
+        const mainAct = Math.min(MAX_CONTINUOUS_STD_ACTIONS_6M, rawUse);
+        effectiveActions += mainAct;
+        passiveProcCasts += Math.max(0, rawUse - mainAct);
+      } else if (tlUse > 0) {
+        effectiveActions += tlUse;
+        passiveProcCasts += Math.max(0, rawUse - tlUse);
+      } else {
+        if (rawUse > 250 && rate < 12) {
+          passiveProcCasts += rawUse;
+        } else {
+          const capped = Math.min(180, rawUse);
+          effectiveActions += capped;
+          passiveProcCasts += Math.max(0, rawUse - capped);
+        }
+      }
+    });
+
+    return {
+      effectiveActions: Math.round(effectiveActions),
+      passiveProcCasts: Math.round(passiveProcCasts),
+      rawTotalCasts: Math.round(rawTotalCasts)
+    };
+  }
+
+  calcRecordBurstShare660(rec, apply660BaselineSubtraction = true) {
     const skills = rec?.skills || [];
     const timelines = rec?.timeline || [];
     if (skills.length === 0) return null;
@@ -189,21 +250,103 @@ class MapleSimulatorWindow {
 
     let totalBurst = 0;
     const omega = 1.75;
+
     skills.forEach(s => {
       const d = Number(s.rate) || 0;
       const n30 = count30.get(s.name) || 0;
       const n90 = count90.get(s.name) || 0;
+      const isKeydown = KEYDOWN_SKILL_KEYWORDS.some(kw => (s.name || '').includes(kw));
+
       if (n30 + n90 === 0) {
-        totalBurst += d * ((30 * omega) / (30 * omega + 90));
+        if (apply660BaselineSubtraction) {
+          const totalWeighted = 30 * omega + 90 * 1.0;
+          const burstExcessShare = (30 * (omega - 1.0)) / totalWeighted;
+          totalBurst += d * burstExcessShare;
+        } else {
+          totalBurst += d * ((30 * omega) / (30 * omega + 90));
+        }
+      } else if (isKeydown && n90 === 0 && n30 > 0) {
+        totalBurst += d * 1.0;
       } else {
-        totalBurst += d * ((n30 * omega) / (n30 * omega + n90));
+        if (apply660BaselineSubtraction && n90 > 0) {
+          const expectedBaseIn30 = n90 * (30 / 90);
+          const pureBurstHits = Math.max(0, n30 * omega - expectedBaseIn30);
+          totalBurst += d * (pureBurstHits / (n30 * omega + n90));
+        } else {
+          totalBurst += d * ((n30 * omega) / (n30 * omega + n90));
+        }
       }
     });
 
-    return Math.min(100, Number(totalBurst.toFixed(1)));
+    return Math.min(100, Math.max(10, Number(totalBurst.toFixed(1))));
+  }
+
+  calcJobCdrHatMultiplier(baseMeta, targetHatSec, weightMode = 'PURE_GAIN') {
+    const recHatSec = Number(baseMeta.recHatSec) || 0;
+    const activeHatSec = targetHatSec === 'REC' ? recHatSec : (Number(targetHatSec) || 0);
+
+    const cdrSharePct = Number(baseMeta.cdrShare) || 20;
+    const baseCoolSec = Number(baseMeta.cdrBaseCool) || 16;
+    const effFactor = Number(baseMeta.cdrEfficiencyFactor) || 0.75;
+
+    const calcGrossGainPctAt = (hatSec) => {
+      if (hatSec <= 0) return 0;
+      const coolAtZero = calcMapleReducedCooldown(baseCoolSec, 0);
+      const coolAtHat = calcMapleReducedCooldown(baseCoolSec, hatSec);
+      if (coolAtHat >= coolAtZero) return 0;
+
+      const castFreqGain = (coolAtZero / coolAtHat) - 1;
+      const grossDpsGainPct = cdrSharePct * castFreqGain * effFactor;
+      return Number(grossDpsGainPct.toFixed(2));
+    };
+
+    const calcStatCostPctAt = (hatSec) => {
+      if (hatSec <= 0) return 0;
+      const statLossTable = { 1: 0.85, 2: 1.70, 3: 2.55, 4: 3.45, 5: 4.40, 6: 5.40 };
+      return statLossTable[hatSec] || (hatSec * 0.88);
+    };
+
+    const gainAtActive = calcGrossGainPctAt(activeHatSec);
+    const gainAt4Sec = calcGrossGainPctAt(4);
+    const costAtActive = weightMode === 'NET_STAT_COST' ? calcStatCostPctAt(activeHatSec) : 0;
+
+    const netAtActive = gainAtActive - costAtActive;
+    const netAtRec = calcGrossGainPctAt(recHatSec) - (weightMode === 'NET_STAT_COST' ? calcStatCostPctAt(recHatSec) : 0);
+
+    const relativeMultiplier = (1 + netAtActive / 100) / (1 + netAtRec / 100);
+    const absoluteMultiplierFromZero = 1 + netAtActive / 100;
+
+    return {
+      activeHatSec,
+      recHatSec,
+      gainAtActive: Number((gainAtActive - costAtActive).toFixed(2)),
+      grossGainAt4Sec: gainAt4Sec,
+      relativeMultiplier,
+      absoluteMultiplierFromZero
+    };
+  }
+
+  updateSortSelectColor() {
+    if (!this.simSortSelect) return;
+    const val = this.simSortSelect.value;
+    if (val === 'DPS_STD_DESC') {
+      this.simSortSelect.style.color = '#4ade80';
+      this.simSortSelect.style.borderColor = '#4ade80';
+    } else if (val === 'DPS_EFF_DESC') {
+      this.simSortSelect.style.color = '#60a5fa';
+      this.simSortSelect.style.borderColor = '#60a5fa';
+    } else if (val === 'FORMULA_DIFF_DESC') {
+      this.simSortSelect.style.color = '#c084fc';
+      this.simSortSelect.style.borderColor = '#c084fc';
+    } else {
+      this.simSortSelect.style.color = '#ffffff';
+      this.simSortSelect.style.borderColor = '#4a5568';
+    }
   }
 
   renderSimulationCards() {
+    this.updateSortSelectColor();
+
     const allRecs = this.getActiveSeasonRecords();
     const savedBurstProfiles = this.localDbData?.savedJobBurstProfiles || {};
 
@@ -217,6 +360,11 @@ class MapleSimulatorWindow {
     const bossHpJo = Number(this.simBossHpJoInput?.value) || 779;
     const forceMult = 1.32;
     const realFactorK = 0.70;
+
+    const hatSelectVal = this.simCoolHatSelect?.value || 'REC';
+    const cdrWeightMode = this.simCdrWeightMode?.value || 'PURE_GAIN';
+    const filterProc660 = this.chkFilterProc660 ? this.chkFilterProc660.checked : true;
+    const base660Burst = this.chkBase660Burst ? this.chkBase660Burst.checked : true;
     const sortMode = this.simSortSelect?.value || 'DPS_STD_DESC';
 
     const heroRecs = allRecs.filter(r => this.isSameJob(r?.job, '히어로') && r.efficiency > 0);
@@ -230,37 +378,30 @@ class MapleSimulatorWindow {
       const cnt = matchedRecs.length;
 
       let avgEff = baseMeta.bpEff || 7138;
-      let avgTotalCasts = baseMeta.avgCasts || 1500;
-      let topSkillSummary = `연무장 체급 ${baseMeta.stdDpmJo || 4.60}조 (기본DB)`;
-      let burstRate = baseMeta.burstRate ?? 50.0;
+      let normActions = baseMeta.normActions6m || 620;
+      let procCasts = baseMeta.procCasts6m || 850;
+      let rawTotalCasts = normActions + procCasts;
 
-      // 로컬 DB에 실제 조회 기록이 있으면 실시간 데이터로 덮어쓰기
+      let burstRate = baseMeta.burstRate ?? 55.0;
+      if (base660Burst && baseMeta.attackStyle === 'HOLD_660') {
+        burstRate = Number(Math.max(18, burstRate - 6.5).toFixed(1));
+      } else if (base660Burst && baseMeta.attackStyle === 'KEYDOWN_BURST') {
+        burstRate = Number(Math.min(78, burstRate + 2.5).toFixed(1));
+      }
+
       if (cnt > 0) {
         const sumDps = matchedRecs.reduce((a, c) => a + (c.dps || 0), 0);
         const sumCp = matchedRecs.reduce((a, c) => a + (c.combatPower || 0), 0);
         avgEff = sumCp > 0 ? Math.round(sumDps / sumCp) : Math.round(matchedRecs.reduce((a, c) => a + c.efficiency, 0) / cnt);
 
-        let castSum = 0;
-        const skillUseMap = new Map();
-        matchedRecs.forEach(r => {
-          (r.skills || []).forEach(sk => {
-            const u = Number(sk.useCount) || 0;
-            castSum += u;
-            skillUseMap.set(sk.name, (skillUseMap.get(sk.name) || 0) + u);
-          });
-        });
-        if (castSum > 0) avgTotalCasts = Math.round(castSum / cnt);
-
-        const topSkills = Array.from(skillUseMap.entries())
-          .map(([name, sumU]) => ({ name, avgU: Math.round(sumU / cnt) }))
-          .sort((a, b) => b.avgU - a.avgU)
-          .slice(0, 2);
-
-        if (topSkills.length > 0) {
-          topSkillSummary = topSkills.map(s => `${s.name}(${s.avgU.toLocaleString()}회)`).join(', ');
+        const actionStats = matchedRecs.map(r => this.analyzeRecordActions660(r)).filter(Boolean);
+        if (actionStats.length > 0) {
+          normActions = Math.round(actionStats.reduce((a, b) => a + b.effectiveActions, 0) / actionStats.length);
+          procCasts = Math.round(actionStats.reduce((a, b) => a + b.passiveProcCasts, 0) / actionStats.length);
+          rawTotalCasts = Math.round(actionStats.reduce((a, b) => a + b.rawTotalCasts, 0) / actionStats.length);
         }
 
-        const bRates = matchedRecs.map(r => this.calcRecordBurstShare(r)).filter(v => v !== null);
+        const bRates = matchedRecs.map(r => this.calcRecordBurstShare660(r, base660Burst)).filter(v => v !== null);
         if (bRates.length > 0) {
           burstRate = Number((bRates.reduce((a, b) => a + b, 0) / bRates.length).toFixed(1));
         }
@@ -270,52 +411,74 @@ class MapleSimulatorWindow {
         burstRate = savedBurstProfiles[jobName].burstRate;
       }
 
-      // [핵심] 1번째 사진(헥환 11만 체급 딜량: 카데나 1위 4.965조 / 히어로 13위 4.6907조) 비례 풀강 지수 산출
-      // 조각 4만 개(풀강)일 때 1번째 사진의 순위(카데나 1위 ~ 렌 48위)가 정확히 재현되도록 역산 보정
+      const cdrInfo = this.calcJobCdrHatMultiplier(baseMeta, hatSelectVal, cdrWeightMode);
+      const hexaRate = this.getInterpolatedHexaRate(jobName, fragCount);
+      const bossHpTotal = bossHpJo * 1e12;
+
+      // 🟢 [공식 1: 초록색] 환산 주스탯 자료(헥환 11만 Q3 체급, 카데나 1위) 기준 계산
       const stdDpmRatio = (baseMeta.stdDpmJo || HERO_BASELINE_DPM_JO) / HERO_BASELINE_DPM_JO;
       const rateAt40k = this.getInterpolatedHexaRate(jobName, 40000);
       const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
-      const stdCalibratedFullIndex = HERO_CALIBRATED_FULL_INDEX * stdDpmRatio * (heroRateAt40k / rateAt40k);
+      const stdFullIndexP = HERO_CALIBRATED_FULL_INDEX * stdDpmRatio * (heroRateAt40k / rateAt40k) * cdrInfo.relativeMultiplier;
+      const stdFullEff = stdFullIndexP * BP_EFF_TO_INDEX_DIVISOR;
+      const stdExpectedDps = Math.round(combatPower * stdFullEff * (hexaRate / 100) * realFactorK * forceMult);
+      const stdClearSec = stdExpectedDps > 0 ? (bossHpTotal / stdExpectedDps) : 9999;
 
-      // 전투력 나눗셈 효율(DPS/전투력: 카이저 1위 7,914) 비례 풀강 지수
-      const effCalibratedFullIndex = HERO_CALIBRATED_FULL_INDEX * (avgEff / heroAvgEff);
+      // 🔵 [공식 2: 파란색] 내 역산 데미지 공식(히어로 819.5 & 인게임 전투력 효율 역산) 기준 계산
+      const myEffFullIndexP = HERO_CALIBRATED_FULL_INDEX * (avgEff / heroAvgEff) * cdrInfo.relativeMultiplier;
+      const myEffFullEff = myEffFullIndexP * BP_EFF_TO_INDEX_DIVISOR;
+      const myExpectedDps = Math.round(combatPower * myEffFullEff * (hexaRate / 100) * realFactorK * forceMult);
+      const myClearSec = myExpectedDps > 0 ? (bossHpTotal / myExpectedDps) : 9999;
 
-      // 선택된 정렬/보정 모드에 따라 적용할 풀강 지수 결정
-      const activeFullIndexP = sortMode === 'DPS_EFF_DESC' ? effCalibratedFullIndex : stdCalibratedFullIndex;
+      // 두 공식 간 편차(%) : (내 역산 공식 DPS - 환산 주스탯 기준 DPS) / 환산 주스탯 기준 DPS
+      const formulaGapPct = stdExpectedDps > 0
+        ? Number((((myExpectedDps - stdExpectedDps) / stdExpectedDps) * 100).toFixed(2))
+        : 0;
 
-      const hexaRate = this.getInterpolatedHexaRate(jobName, fragCount);
-      const fullEff = activeFullIndexP * BP_EFF_TO_INDEX_DIVISOR;
-      const expectedRealDps = Math.round(combatPower * fullEff * (hexaRate / 100) * realFactorK * forceMult);
-
-      const bossHpTotal = bossHpJo * 1e12;
-      const clearSec = expectedRealDps > 0 ? (bossHpTotal / expectedRealDps) : 9999;
+      const cdrActionBoost = Math.round(normActions * ((cdrInfo.absoluteMultiplierFromZero - 1) * 0.65));
+      const finalNormActions = normActions + cdrActionBoost;
+      const displayActions = filterProc660 ? finalNormActions : (rawTotalCasts + cdrActionBoost);
 
       return {
         job: jobName,
         rank11: baseMeta.rank11 || 99,
         stdDpmJo: baseMeta.stdDpmJo || 4.5,
         bpEff: avgEff,
-        recordCount: cnt,
-        expectedRealDps,
+        stdFullIndexP: Number(stdFullIndexP.toFixed(1)),
+        myEffFullIndexP: Number(myEffFullIndexP.toFixed(1)),
+        stdExpectedDps,
+        stdClearSec,
+        myExpectedDps,
+        myClearSec,
+        formulaGapPct,
         hexaRate,
-        clearSec,
         burstRate,
-        avgTotalCasts,
-        topSkillSummary,
+        displayActions,
+        finalNormActions,
+        procCasts,
+        cdrShare: baseMeta.cdrShare || 20,
+        cdrInfo,
+        attackStyle: baseMeta.attackStyle || 'HOLD_660',
         hasIframe: Boolean(baseMeta.hasIframe),
         iframeCoolSec: Number(baseMeta.iframeCoolSec) || 0,
         iframeName: baseMeta.iframeName || '정보 없음',
-        hasBind: Boolean(baseMeta.hasBind),
-        difficulty: baseMeta.difficulty || '보통'
+        hasBind: Boolean(baseMeta.hasBind)
       };
     });
+
+    // 전체 48개 직업 내에서의 🟢표준체급(Q3) 순위 vs 🔵내 역산공식 순위 각각 산정
+    const sortedByStd = [...jobResults].sort((a, b) => b.stdExpectedDps - a.stdExpectedDps);
+    sortedByStd.forEach((it, idx) => { it.stdRank = idx + 1; });
+
+    const sortedByMy = [...jobResults].sort((a, b) => b.myExpectedDps - a.myExpectedDps);
+    sortedByMy.forEach((it, idx) => { it.myRank = idx + 1; });
 
     const roleFilter = this.simRoleFilter?.value || 'ALL';
     const iframeFilter = this.simIframeFilter?.value || 'ALL';
 
     const filtered = jobResults.filter(item => {
-      if (roleFilter === 'BURST' && (item.burstRate === null || item.burstRate < 50)) return false;
-      if (roleFilter === 'SUSTAINED' && (item.burstRate === null || item.burstRate >= 50)) return false;
+      if (roleFilter === 'BURST' && item.burstRate < 50) return false;
+      if (roleFilter === 'SUSTAINED' && item.burstRate >= 50) return false;
 
       if (iframeFilter === 'HAS_IFRAME' && !item.hasIframe) return false;
       if (!isNaN(Number(iframeFilter)) && Number(iframeFilter) > 0) {
@@ -326,15 +489,18 @@ class MapleSimulatorWindow {
     });
 
     filtered.sort((a, b) => {
-      if (sortMode === 'BURST_DESC') return (b.burstRate || 0) - (a.burstRate || 0);
-      if (sortMode === 'CAST_DESC') return b.avgTotalCasts - a.avgTotalCasts;
-      if (sortMode === 'CAST_ASC') return a.avgTotalCasts - b.avgTotalCasts;
+      if (sortMode === 'DPS_EFF_DESC') return b.myExpectedDps - a.myExpectedDps;
+      if (sortMode === 'FORMULA_DIFF_DESC') return Math.abs(b.formulaGapPct) - Math.abs(a.formulaGapPct);
+      if (sortMode === 'CDR_EFF_DESC') return b.cdrInfo.grossGainAt4Sec - a.cdrInfo.grossGainAt4Sec;
+      if (sortMode === 'BURST_DESC') return b.burstRate - a.burstRate;
+      if (sortMode === 'ACT_ASC') return a.displayActions - b.displayActions;
+      if (sortMode === 'ACT_DESC') return b.displayActions - a.displayActions;
       if (sortMode === 'IFRAME_ASC') {
         const coolA = a.hasIframe && a.iframeCoolSec > 0 ? a.iframeCoolSec : 999;
         const coolB = b.hasIframe && b.iframeCoolSec > 0 ? b.iframeCoolSec : 999;
-        return coolA - coolB || b.expectedRealDps - a.expectedRealDps;
+        return coolA - coolB || b.stdExpectedDps - a.stdExpectedDps;
       }
-      return b.expectedRealDps - a.expectedRealDps;
+      return b.stdExpectedDps - a.stdExpectedDps;
     });
 
     if (this.simCountStatus) {
@@ -347,26 +513,46 @@ class MapleSimulatorWindow {
       return;
     }
 
-    this.simCardsContainer.innerHTML = filtered.map((item, idx) => {
-      const isBurst = item.burstRate !== null && item.burstRate >= 50;
-      const cardClass = isBurst ? 'burst-card' : 'sustained-card';
-      const roleTag = isBurst
-        ? `<span style="color:#fc8181; font-size:10px; font-weight:bold;">[🔥극딜 ${item.burstRate}%]</span>`
-        : `<span style="color:#63b3ed; font-size:10px; font-weight:bold;">[🔄평딜 ${item.burstRate}%]</span>`;
+    const styleLabelMap = {
+      'HOLD_660': '660ms주력기유지',
+      'KEYDOWN_BURST': '키다운극딜포함',
+      'COMBO_CDR': '쿨감연계형'
+    };
 
-      const clearMin = Math.floor(item.clearSec / 60);
-      const clearRemSec = Math.round(item.clearSec % 60);
-      const clearText = `${bossHpJo}조 클리어: 약 ${clearMin}분 ${String(clearRemSec).padStart(2, '0')}초`;
+    const formatClearTime = (sec) => {
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      return `${m}분 ${String(s).padStart(2, '0')}초`;
+    };
+
+    this.simCardsContainer.innerHTML = filtered.map((item, idx) => {
+      const isBurst = item.burstRate >= 50;
+      const cardClass = isBurst ? 'burst-card' : 'sustained-card';
+      const styleText = styleLabelMap[item.attackStyle] || '표준형';
+      const roleTag = isBurst
+        ? `<span style="color:#fc8181; font-size:10px; font-weight:bold;">[🔥극딜 ${item.burstRate}% · ${styleText}]</span>`
+        : `<span style="color:#63b3ed; font-size:10px; font-weight:bold;">[🔄평딜 ${item.burstRate}% · ${styleText}]</span>`;
+
+      const isMyFormulaSelected = sortMode === 'DPS_EFF_DESC';
+      const gapSign = item.formulaGapPct >= 0 ? '+' : '';
+      const rankDiff = item.stdRank - item.myRank;
+      const rankDiffText = rankDiff > 0
+        ? `<span style="color:#60a5fa;">(역산이 ▲${rankDiff}계단 높음)</span>`
+        : (rankDiff < 0 ? `<span style="color:#4ade80;">(표준체급이 ▲${Math.abs(rankDiff)}계단 높음)</span>` : `<span>(순위 동일)</span>`);
+
+      const hatLabel = item.cdrInfo.activeHatSec > 0 ? `${item.cdrInfo.activeHatSec}초뚝` : '스탯뚝(0초)';
+      const sign = item.cdrInfo.gainAtActive >= 0 ? '+' : '';
+      const cdrBadge = `<span class="util-badge cdr-badge" title="쿨감 유효 스킬 비중: ${item.cdrShare}% / 4초뚝 순수 딜상승: +${item.cdrInfo.grossGainAt4Sec}%">🎩${hatLabel}(딜 ${sign}${item.cdrInfo.gainAtActive}% · 4초유효 +${item.cdrInfo.grossGainAt4Sec}%)</span>`;
 
       const iframeBadge = item.hasIframe
-        ? `<span class="util-badge iframe-ok" title="${item.iframeName}">🛡️무적 쿨 ${item.iframeCoolSec}초 (${item.iframeName})</span>`
-        : `<span class="util-badge">무적기 없음(${item.iframeName})</span>`;
+        ? `<span class="util-badge iframe-ok" title="${item.iframeName}">🛡️무적 ${item.iframeCoolSec}초</span>`
+        : `<span class="util-badge">무적기 없음</span>`;
 
-      const bindBadge = item.hasBind
-        ? `<span class="util-badge bind-ok">⛓️자체바인드</span>`
-        : '';
+      const actionBadge = filterProc660
+        ? `<span class="util-badge cast-badge" title="6분간 사출기/자동타수 ${item.procCasts.toLocaleString()}회 제외됨 (660ms 정규화 기준)">⌨️실효 조작: ${item.finalNormActions.toLocaleString()}회 (사출 ${item.procCasts.toLocaleString()}제외)</span>`
+        : `<span class="util-badge cast-badge">⌨️원시 총 타수: ${item.displayActions.toLocaleString()}회</span>`;
 
-      const castBadge = `<span class="util-badge cast-badge">⌨️6분 평균 타수: ${item.avgTotalCasts.toLocaleString()}회</span>`;
+      const bindBadge = item.hasBind ? `<span class="util-badge bind-ok">⛓️바인드</span>` : '';
 
       return `
         <div class="job-sim-card ${cardClass}" data-job="${item.job}">
@@ -376,15 +562,29 @@ class MapleSimulatorWindow {
               <span class="job-name">${item.job}</span>
               ${roleTag}
             </div>
-            <span class="dps-val">${formatKoreanNumber(item.expectedRealDps)}/초</span>
+            <span style="font-size:10px; color:#cbd5e0;">헥환 <b>${item.hexaRate}%</b> · 권장: <b>${item.cdrInfo.recHatSec > 0 ? item.cdrInfo.recHatSec + '초뚝' : '스탯뚝'}</b></span>
           </div>
-          <div class="card-mid">
-            <span style="color:#fbd38d; font-weight:bold;">⏱️ ${clearText}</span>
-            <span style="font-size:10px; color:#a0aec0;">헥환 ${item.hexaRate}% · ${item.topSkillSummary}</span>
+
+          <!-- 🟢환산주스탯(초록색) vs 🔵내 역산 데미지 공식(파란색) 2단 직관 비교 박스 -->
+          <div class="formula-compare-box">
+            <div class="formula-row ${!isMyFormulaSelected ? 'active-formula-row' : ''}">
+              <span class="text-green-formula">🟢 환산체급 (#${item.stdRank}위 · ${item.stdDpmJo}조)</span>
+              <span class="text-green-formula">${formatKoreanNumber(item.stdExpectedDps)}/초 <small style="color:#a7f3d0; font-weight:normal;">(${formatClearTime(item.stdClearSec)})</small></span>
+            </div>
+            <div class="formula-row ${isMyFormulaSelected ? 'active-formula-row' : ''}">
+              <span class="text-blue-formula">🔵 내역산공식 (#${item.myRank}위 · 지수 ${item.myEffFullIndexP})</span>
+              <span class="text-blue-formula">${formatKoreanNumber(item.myExpectedDps)}/초 <small style="color:#bae6fd; font-weight:normal;">(${formatClearTime(item.myClearSec)})</small></span>
+            </div>
+            <div class="formula-diff-line">
+              <span>⚖️ 공식 편차: <b style="color:${item.formulaGapPct >= 0 ? '#60a5fa' : '#4ade80'};">${gapSign}${item.formulaGapPct}%</b> ${rankDiffText}</span>
+              <span>전투력효율: ${item.bpEff.toLocaleString()}</span>
+            </div>
           </div>
+
           <div class="card-badges">
+            ${cdrBadge}
+            ${actionBadge}
             ${iframeBadge}
-            ${castBadge}
             ${bindBadge}
           </div>
         </div>
@@ -401,36 +601,38 @@ class MapleSimulatorWindow {
   renderUtilityEditor() {
     if (!this.utilEditListContainer) return;
     this.utilEditListContainer.innerHTML = MASTER_JOB_LIST.map(jobName => {
-      const u = this.utilityDb[jobName] || { hasIframe: false, iframeCoolSec: 0, iframeName: '', stdDpmJo: 4.5 };
+      const u = this.utilityDb[jobName] || {};
       return `
-        <div style="background:#181e2c; border:1px solid #2d3748; border-radius:4px; padding:6px 8px; display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:11px;">
-          <strong style="width:90px; color:#fff; flex-shrink:0;">${jobName}</strong>
-          <label style="display:flex; align-items:center; gap:2px; white-space:nowrap;" title="헥환 11만 기준 연무장 평균 딜량(조)">
-            체급:<input type="number" step="0.01" class="edit-dpm-input" data-job="${jobName}" value="${u.stdDpmJo || 4.5}" style="width:46px; background:#11151e; color:#4fd1c5; border:1px solid #4a5568; text-align:right; font-size:10px;" />조
+        <div style="background:#181e2c; border:1px solid #2d3748; border-radius:4px; padding:6px 8px; display:flex; align-items:center; justify-content:space-between; gap:5px; font-size:10px;">
+          <strong style="width:82px; color:#fff; flex-shrink:0;">${jobName}</strong>
+          <label style="white-space:nowrap;" title="쿨뚝 영향을 받는 스킬 딜 비중(%)">
+            쿨감비중:<input type="number" class="edit-cdrshare-input" data-job="${jobName}" value="${u.cdrShare || 20}" style="width:36px; background:#11151e; color:#d6bcfa; border:1px solid #4a5568; text-align:right; font-size:10px;" />%
           </label>
-          <label style="display:flex; align-items:center; gap:2px; white-space:nowrap;">
+          <label style="white-space:nowrap;" title="표준 권장 모자 초수(0/2/4)">
+            권장뚝:<input type="number" class="edit-rechat-input" data-job="${jobName}" value="${u.recHatSec || 0}" style="width:28px; background:#11151e; color:#4fd1c5; border:1px solid #4a5568; text-align:right; font-size:10px;" />초
+          </label>
+          <label style="white-space:nowrap;">
             <input type="checkbox" class="edit-iframe-chk" data-job="${jobName}" ${u.hasIframe ? 'checked' : ''} />무적
           </label>
-          <label style="display:flex; align-items:center; gap:2px; white-space:nowrap;">
-            쿨:<input type="number" class="edit-cool-input" data-job="${jobName}" value="${u.iframeCoolSec}" style="width:40px; background:#11151e; color:#fbd38d; border:1px solid #4a5568; text-align:right; font-size:10px;" />초
+          <label style="white-space:nowrap;">
+            쿨:<input type="number" class="edit-cool-input" data-job="${jobName}" value="${u.iframeCoolSec || 0}" style="width:34px; background:#11151e; color:#fbd38d; border:1px solid #4a5568; text-align:right; font-size:10px;" />초
           </label>
-          <input type="text" class="edit-desc-input" data-job="${jobName}" value="${u.iframeName}" placeholder="무적기 설명" style="flex:1; min-width:65px; background:#11151e; color:#cbd5e0; border:1px solid #4a5568; font-size:10px; padding:2px 4px;" />
         </div>
       `;
     }).join('');
 
     const bindUpdate = () => {
-      this.utilEditListContainer.querySelectorAll('.edit-dpm-input').forEach(inp => {
-        this.utilityDb[inp.dataset.job].stdDpmJo = Number(inp.value) || 4.5;
+      this.utilEditListContainer.querySelectorAll('.edit-cdrshare-input').forEach(inp => {
+        this.utilityDb[inp.dataset.job].cdrShare = Number(inp.value) || 0;
+      });
+      this.utilEditListContainer.querySelectorAll('.edit-rechat-input').forEach(inp => {
+        this.utilityDb[inp.dataset.job].recHatSec = Number(inp.value) || 0;
       });
       this.utilEditListContainer.querySelectorAll('.edit-iframe-chk').forEach(chk => {
         this.utilityDb[chk.dataset.job].hasIframe = chk.checked;
       });
       this.utilEditListContainer.querySelectorAll('.edit-cool-input').forEach(inp => {
         this.utilityDb[inp.dataset.job].iframeCoolSec = Number(inp.value) || 0;
-      });
-      this.utilEditListContainer.querySelectorAll('.edit-desc-input').forEach(inp => {
-        this.utilityDb[inp.dataset.job].iframeName = inp.value;
       });
       this.saveUtilityDb();
       this.renderSimulationCards();
@@ -443,9 +645,7 @@ class MapleSimulatorWindow {
 
   bindEvents() {
     if (this.snapStateBtn) {
-      this.snapStateBtn.addEventListener('click', () => {
-        ipcRenderer.send('sim-force-snap');
-      });
+      this.snapStateBtn.addEventListener('click', () => ipcRenderer.send('sim-force-snap'));
     }
 
     ipcRenderer.on('snap-state-changed', (event, snapped) => {
@@ -454,9 +654,7 @@ class MapleSimulatorWindow {
       this.snapStateBtn.textContent = snapped ? '🧲 자석 붙음' : '🔓 분리됨(클릭시 부착)';
     });
 
-    ipcRenderer.on('db-updated-from-main', () => {
-      this.reloadFromMainDb();
-    });
+    ipcRenderer.on('db-updated-from-main', () => this.reloadFromMainDb());
 
     if (this.alwaysOnTopBtn) {
       this.alwaysOnTopBtn.addEventListener('click', () => {
@@ -466,12 +664,8 @@ class MapleSimulatorWindow {
       });
     }
 
-    if (this.minWinBtn) {
-      this.minWinBtn.addEventListener('click', () => ipcRenderer.send('sim-window-minimize'));
-    }
-    if (this.closeWinBtn) {
-      this.closeWinBtn.addEventListener('click', () => ipcRenderer.send('sim-window-close'));
-    }
+    if (this.minWinBtn) this.minWinBtn.addEventListener('click', () => ipcRenderer.send('sim-window-minimize'));
+    if (this.closeWinBtn) this.closeWinBtn.addEventListener('click', () => ipcRenderer.send('sim-window-close'));
 
     if (this.tabSimResult && this.tabUtilEdit) {
       this.tabSimResult.addEventListener('click', () => {
@@ -492,9 +686,13 @@ class MapleSimulatorWindow {
       this.simCpManInput,
       this.simFragInput,
       this.simBossHpJoInput,
+      this.simCoolHatSelect,
+      this.simCdrWeightMode,
       this.simRoleFilter,
       this.simIframeFilter,
-      this.simSortSelect
+      this.simSortSelect,
+      this.chkFilterProc660,
+      this.chkBase660Burst
     ].forEach(el => {
       if (el) el.addEventListener('input', () => this.renderSimulationCards());
       if (el) el.addEventListener('change', () => this.renderSimulationCards());

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>직업 추천 & 스펙 시뮬레이터</title>
+  <title>직업 추천 & 양대 공식 비교 시뮬레이터</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -20,7 +20,6 @@
       user-select: none;
     }
 
-    /* 메이플 외부 채팅창 스타일 드래그 타이틀바 */
     .chat-titlebar {
       -webkit-app-region: drag;
       height: 32px;
@@ -69,7 +68,6 @@
       color: #fbd38d;
     }
 
-    /* 메이플 외부 채팅창 탭 바 스타일 */
     .chat-tab-bar {
       display: flex;
       background: #171c26;
@@ -84,7 +82,7 @@
       border: 1px solid #2d3748;
       border-bottom: none;
       border-radius: 5px 5px 0 0;
-      padding: 5px 12px;
+      padding: 5px 10px;
       font-size: 11px;
       font-weight: bold;
       cursor: pointer;
@@ -95,20 +93,24 @@
       border-top: 2px solid #f6ad55;
     }
 
-    /* 상단 스펙 & 유틸 필터 패널 */
     .filter-panel {
       background: #161b26;
       border-bottom: 1px solid #2d3748;
-      padding: 8px 10px;
+      padding: 7px 9px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
       flex-shrink: 0;
     }
     .spec-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
+      gap: 5px;
+    }
+    .spec-grid-2 {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 5px;
     }
     .spec-box {
       background: #11151e;
@@ -128,10 +130,30 @@
       border: 1px solid #4a5568;
       color: #fff;
       border-radius: 3px;
-      padding: 3px 5px;
+      padding: 2px 4px;
       font-size: 11px;
       font-weight: bold;
     }
+
+    /* 정렬 드롭다운 내부 항목별 글씨 색상 구분 */
+    #simSortSelect option {
+      background-color: #141923;
+      font-weight: bold;
+      padding: 4px;
+    }
+    #simSortSelect option.opt-green {
+      color: #4ade80; /* 초록색: 환산 주스탯(헥환 11만 Q3) 기준 */
+    }
+    #simSortSelect option.opt-blue {
+      color: #60a5fa; /* 파란색: 내 역산 데미지 공식(히어로 819.5) 기준 */
+    }
+    #simSortSelect option.opt-diff {
+      color: #c084fc; /* 보라색: 두 공식 편차 비교 */
+    }
+    #simSortSelect option.opt-normal {
+      color: #e2e8f0;
+    }
+
     .frag-quick-row {
       display: flex;
       gap: 4px;
@@ -142,7 +164,7 @@
       border: 1px solid #2d3748;
       color: #cbd5e0;
       border-radius: 3px;
-      padding: 3px 2px;
+      padding: 2px 2px;
       font-size: 10px;
       cursor: pointer;
       text-align: center;
@@ -154,11 +176,28 @@
       font-weight: bold;
     }
 
-    /* 결과 리스트 영역 (채팅 로그처럼 스크롤) */
+    .formula-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #11151e;
+      border: 1px solid #2d3748;
+      border-radius: 4px;
+      padding: 4px 7px;
+      font-size: 10px;
+      color: #cbd5e0;
+    }
+    .formula-bar label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+
     .result-scroll-area {
       flex: 1;
       overflow-y: auto;
-      padding: 8px;
+      padding: 7px 8px;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -183,7 +222,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 4px;
+      margin-bottom: 5px;
     }
     .job-title-wrap {
       display: flex;
@@ -203,19 +242,50 @@
       font-weight: bold;
       color: #fff;
     }
-    .dps-val {
-      font-size: 12px;
-      font-weight: bold;
-      color: #4fd1c5;
+
+    /* 초록색(표준체급 기준) vs 파란색(내 역산 데미지 공식) 비교 박스 */
+    .formula-compare-box {
+      background: #121722;
+      border: 1px solid #283142;
+      border-radius: 4px;
+      padding: 5px 7px;
+      margin-bottom: 5px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
     }
-    .card-mid {
+    .formula-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-size: 11px;
-      color: #cbd5e0;
-      margin-bottom: 4px;
+      padding: 1px 3px;
+      border-radius: 3px;
     }
+    .formula-row.active-formula-row {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    /* 초록색: 환산 주스탯 헥환 11만 체급 기준 */
+    .text-green-formula {
+      color: #4ade80;
+      font-weight: bold;
+    }
+    /* 파란색: 내 역산 데미지 공식 (히어로 819.5 & 전투력 효율) 기준 */
+    .text-blue-formula {
+      color: #60a5fa;
+      font-weight: bold;
+    }
+    .formula-diff-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      border-top: 1px dashed #2d3748;
+      padding-top: 3px;
+      margin-top: 1px;
+      color: #a0aec0;
+    }
+
     .card-badges {
       display: flex;
       flex-wrap: wrap;
@@ -234,13 +304,19 @@
       border-color: rgba(246, 173, 85, 0.4);
       background: rgba(237, 137, 54, 0.12);
     }
-    .util-badge.bind-ok {
-      color: #9ae6b4;
-      border-color: rgba(72, 187, 120, 0.4);
+    .util-badge.cdr-badge {
+      color: #d6bcfa;
+      border-color: rgba(183, 148, 244, 0.45);
+      background: rgba(128, 90, 213, 0.15);
+      font-weight: bold;
     }
     .util-badge.cast-badge {
       color: #90cdf4;
       border-color: rgba(99, 179, 237, 0.35);
+    }
+    .util-badge.bind-ok {
+      color: #9ae6b4;
+      border-color: rgba(72, 187, 120, 0.4);
     }
 
     .sim-footer {
@@ -259,26 +335,24 @@
 </head>
 <body>
 
-  <!-- 1. 외부 채팅창 스타일 상단 드래그 바 -->
   <header class="chat-titlebar">
     <div class="title-left">
-      <span>🍁 MAPLESTORY SIMULATOR</span>
+      <span>🍁 MAPLESTORY SIMULATOR (초록:표준체급(Q3) vs 파랑:역산공식)</span>
     </div>
     <div class="title-controls">
-      <button id="snapStateBtn" class="bar-btn active-snap" type="button" title="클릭하면 메인 창 우측에 즉시 자석처럼 다시 붙습니다">🧲 자석 붙음</button>
-      <button id="alwaysOnTopBtn" class="bar-btn" type="button" title="창을 항상 맨 위에 고정합니다">📌 항상 위</button>
+      <button id="snapStateBtn" class="bar-btn active-snap" type="button" title="클릭 시 메인 창 우측에 자석 부착">🧲 자석 붙음</button>
+      <button id="alwaysOnTopBtn" class="bar-btn" type="button" title="항상 위에 고정">📌 항상 위</button>
       <button id="minWinBtn" class="bar-btn" type="button">_</button>
       <button id="closeWinBtn" class="bar-btn" type="button">✕</button>
     </div>
   </header>
 
-  <!-- 2. 상단 탭 바 -->
   <nav class="chat-tab-bar">
-    <button id="tabSimResult" class="chat-tab active" type="button">🏆 스펙별 딜 & 직업 추천</button>
-    <button id="tabUtilEdit" class="chat-tab" type="button">🛡️ 무적기 쿨타임 DB 설정</button>
+    <button id="tabSimResult" class="chat-tab active" type="button">🏆 양대 공식 비교 & 직업 추천</button>
+    <button id="tabUtilEdit" class="chat-tab" type="button">🛡️ 쿨뚝 유효율 & 무적 DB</button>
   </nav>
 
-  <!-- [뷰 1] 스펙 시뮬레이터 & 직업 추천 결과창 -->
+  <!-- [뷰 1] 메인 시뮬레이터 뷰 -->
   <div id="simResultView" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
     <section class="filter-panel">
       <div class="spec-grid">
@@ -299,9 +373,8 @@
         </div>
       </div>
 
-      <!-- 조각 프리셋 칩 -->
       <div class="frag-quick-row">
-        <button type="button" class="frag-chip" data-frag="0">0조각(1렙)</button>
+        <button type="button" class="frag-chip" data-frag="0">0조각</button>
         <button type="button" class="frag-chip" data-frag="2000">2천개</button>
         <button type="button" class="frag-chip active" data-frag="5656">본캐(5656)</button>
         <button type="button" class="frag-chip" data-frag="10000">1만개</button>
@@ -309,10 +382,34 @@
         <button type="button" class="frag-chip" data-frag="40000">4만(풀강)</button>
       </div>
 
-      <!-- 추천 조건 필터 (딜 성향 / 무적기 쿨타임 / 정렬 기준) -->
-      <div class="spec-grid" style="margin-top: 2px;">
+      <!-- 쿨타임 감소 모자(쿨뚝) 설정 행 -->
+      <div class="spec-grid-2">
         <div class="spec-box">
-          <label>⚡ 딜 구조 성향</label>
+          <label>🎩 착용 모자 (쿨뚝 초수 설정)</label>
+          <select id="simCoolHatSelect">
+            <option value="REC" selected>직업별 연무장 표준뚝 (권장 자동)</option>
+            <option value="0">스탯뚝 착용 (쿨감 0초 고정)</option>
+            <option value="1">1초뚝 착용 (쿨감 -1초)</option>
+            <option value="2">2초뚝 착용 (쿨감 -2초)</option>
+            <option value="3">3초뚝 착용 (쿨감 -3초)</option>
+            <option value="4">4초뚝 착용 (쿨감 -4초)</option>
+            <option value="5">5초뚝 착용 (쿨감 -5초)</option>
+            <option value="6">6초뚝 착용 (쿨감 -6초)</option>
+          </select>
+        </div>
+        <div class="spec-box">
+          <label>⚖️ 쿨뚝 딜 가중치 방식</label>
+          <select id="simCdrWeightMode">
+            <option value="PURE_GAIN" selected>순수 쿨감 회전 딜상승치 반영</option>
+            <option value="NET_STAT_COST">스탯뚝 기회비용(-주스탯%) 차감</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 딜 구조 / 무적기 / 정렬 (초록색 & 파란색 구분) -->
+      <div class="spec-grid">
+        <div class="spec-box">
+          <label>⚡ 딜 구조 (660ms 보정)</label>
           <select id="simRoleFilter">
             <option value="ALL">전체 (극딜+평딜)</option>
             <option value="BURST">🔥 극딜 직업 (50%↑)</option>
@@ -320,46 +417,59 @@
           </select>
         </div>
         <div class="spec-box">
-          <label>🛡️ 무적기 쿨타임 조건</label>
+          <label>🛡️ 무적기 쿨타임</label>
           <select id="simIframeFilter">
             <option value="ALL">무적기 무관 (전체)</option>
             <option value="HAS_IFRAME">무적기 보유 필수</option>
-            <option value="45">쿨 45초 이하 (극생존)</option>
-            <option value="60">쿨 60초 이하 (안정)</option>
+            <option value="30">쿨 30초 이하</option>
+            <option value="45">쿨 45초 이하</option>
+            <option value="60">쿨 60초 이하</option>
             <option value="90">쿨 90초 이하</option>
-            <option value="120">쿨 120초 이하</option>
           </select>
         </div>
-        <div class="spec-box">
-          <label>📊 정렬 기준</label>
-          <select id="simSortSelect">
-            <option value="DPS_DESC">예상 실전 딜량 높은순</option>
-            <option value="BURST_DESC">30초 극딜 비중 높은순</option>
-            <option value="CAST_DESC">스킬 사용 횟수 많은순</option>
-            <option value="CAST_ASC">스킬 사용 횟수 적은순(편함)</option>
-            <option value="IFRAME_ASC">무적기 쿨타임 짧은순</option>
+        <div class="spec-box" style="grid-column: span 1;">
+          <label>📊 정렬 기준 (초록 vs 파랑)</label>
+          <select id="simSortSelect" style="color: #4ade80; border-color: #4ade80;">
+            <option value="DPS_STD_DESC" class="opt-green" selected>🟢 [환산주스탯] 헥환11만 체급 딜량순</option>
+            <option value="DPS_EFF_DESC" class="opt-blue">🔵 [내 역산공식] 히어로·전투력 역산순</option>
+            <option value="FORMULA_DIFF_DESC" class="opt-diff">⚖️ [공식비교] 역산 vs 표준체급 격차 큰순</option>
+            <option value="CDR_EFF_DESC" class="opt-normal">🎩 4초뚝 유효율(딜상승) 높은순</option>
+            <option value="BURST_DESC" class="opt-normal">🔥 660ms 보정 극딜 비중순</option>
+            <option value="ACT_ASC" class="opt-normal">⌨️ 실효 조작(사출기제외) 적은순</option>
+            <option value="ACT_DESC" class="opt-normal">⌨️ 실효 조작(사출기제외) 많은순</option>
+            <option value="IFRAME_ASC" class="opt-normal">🛡️ 무적기 쿨타임 짧은순</option>
           </select>
         </div>
       </div>
+
+      <!-- 660ms 표준 액션 딜레이 수식 체크 바 -->
+      <div class="formula-bar">
+        <label title="체크 시 사출기/파이널어택 타수를 제외하고 키다운을 660ms 표준 액션으로 환산합니다.">
+          <input type="checkbox" id="chkFilterProc660" checked />
+          <span>⌨️ 사출기 제거 & 660ms 정규화</span>
+        </label>
+        <label title="체크 시 660ms 주력기를 꾹 누를 때의 평딜 기저치를 극딜 구간에서 차감합니다.">
+          <input type="checkbox" id="chkBase660Burst" checked />
+          <span>⚡ 660ms 기저평딜 차감</span>
+        </label>
+      </div>
     </section>
 
-    <!-- 결과 리스트 -->
     <div id="simCardsContainer" class="result-scroll-area"></div>
   </div>
 
-  <!-- [뷰 2] 무적기 쿨타임 DB 커스텀 편집 뷰 -->
+  <!-- [뷰 2] 쿨뚝 유효율 & 무적기 커스텀 편집 뷰 -->
   <div id="utilEditView" class="result-scroll-area hidden">
     <div style="font-size: 11px; color: #a0aec0; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
-      <span>💡 직업별 무적기 쿨타임(초)과 스킬명을 내 기준에 맞게 수정할 수 있습니다.</span>
+      <span>💡 직업별 쿨뚝 유효 스킬 비중(%)과 무적기 쿨타임(초)을 커스텀 조정할 수 있습니다.</span>
       <button id="resetUtilDbBtn" class="bar-btn" type="button">기본값 복원</button>
     </div>
     <div id="utilEditListContainer" style="display: flex; flex-direction: column; gap: 6px;"></div>
   </div>
 
-  <!-- 하단 상태바 -->
   <footer class="sim-footer">
     <span id="simCountStatus">조건 부합: 0개 직업</span>
-    <span>카드 클릭 시 메인 창 상세 연동</span>
+    <span><b style="color:#4ade80;">●초록:표준체급(Q3)</b> · <b style="color:#60a5fa;">●파랑:내 역산공식</b></span>
   </footer>
 
   <script src="./simulator.js"></script>
