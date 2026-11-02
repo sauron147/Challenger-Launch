@@ -1,18 +1,173 @@
 const { ipcRenderer } = require('electron');
+const {
+  HERO_CALIBRATED_FULL_INDEX,
+  HERO_BASELINE_DPM_JO,
+  BP_EFF_TO_INDEX_DIVISOR,
+  STANDARD_ACTION_DELAY_MS,
+  MAX_CONTINUOUS_STD_ACTIONS_6M,
+  PASSIVE_PROC_SKILL_KEYWORDS,
+  KEYDOWN_SKILL_KEYWORDS,
+  calcMapleReducedCooldown,
+  HEXA_FRAGMENT_TABLE,
+  MASTER_JOB_LIST,
+  DEFAULT_JOB_UTILITY_DB
+} = require('./job_utility_db.js');
 
-const SEEDRING_KEYWORDS = [
-  '리스트레인트 링', '컨티뉴어스 링', '웨폰퍼프', '리스크테이커 링', '크라이시스', '링 오브 썸', '듀라빌리티 링', '얼티메이텀 링'
-];
+/**
+ * ============================================================================
+ * [메이플스토리 공식 연계 직업 8종 고정 DB (STRICT_COMBO_JOBS_DB)]
+ * - 질문 6 ("연계직업이 좋은가?")에서 '아니오' 선택 시 아래 8개 직업은
+ *   추천 결과 및 시뮬레이터 목록에서 100% 제외(숨김)됩니다.
+ * ============================================================================
+ */
+const STRICT_COMBO_JOBS_DB = {
+  '카데나': {
+    weapon: '체인 (도적)',
+    feature: '짧은 쿨타임의 다양한 무기를 연계해 화력을 뿜어내며, 피지컬과 숙련도에 따른 고점 차이가 매우 큽니다.'
+  },
+  '블래스터': {
+    weapon: '건틀릿 리볼버 (전사)',
+    feature: '일정한 리듬에 맞춰 스킬을 연타하는 캔슬 플레이가 필수적이며, 조작 성공 시 화력 리턴이 확실합니다.'
+  },
+  '칼리': {
+    weapon: '차크람 (도적)',
+    feature: '아츠-보이드 캔슬-헥스로 이어지는 스타일리쉬한 연계를 사용하며, 기동성과 속도감이 뛰어납니다.'
+  },
+  '에반': {
+    weapon: '완드/스태프 (마법사)',
+    feature: '에반 본인과 미르(드래곤)의 스킬을 번갈아 사용하며, 다수의 융합 커맨드와 거리 조절이 필요합니다.'
+  },
+  '제로': {
+    weapon: '대검/태도 (전사)',
+    feature: '알파와 베타 두 캐릭터를 교대하며 태그(연계) 플레이를 수행합니다.'
+  },
+  '메르세데스': {
+    weapon: '듀얼보우건 (궁수)',
+    feature: '공중 체공 및 연계 스킬 사용 시 주요 스킬의 쿨타임이 줄어드는 구조를 가지고 있습니다.'
+  },
+  '아크': {
+    weapon: '너클 (해적)',
+    feature: '기본 상태와 스펙터 상태를 오가며 스킬 연계를 통해 잠식 제어와 딜링을 동시에 수행합니다.'
+  },
+  '스트라이커': {
+    weapon: '너클 (해적)',
+    feature: '기본기 스킬들 간의 연계가 물 흐르듯 이어지는 해적 직업으로 타격감이 시원합니다.'
+  }
+};
 
-const KNOWN_BUFF_KEYWORDS = [
-  '소울 컨트랙트', '그란디스 여신의 축복', '시그너스 여신의 축복', '메이플월드 여신의 축복', '이계의 여신의 축복', '초월자 륀느의 기원',
-  '바디 오브 스틸', '오라 웨폰', '오버드라이브', '레디 투 다이', '에픽 어드벤처', '히어로즈 오쓰',
-  '파이널 트랜스', '마제스티 오브 카이저', '로버스트 아머', '파이널 피규레이션', '초월 : 불굴의 결의', '리미트 브레이크', '메이플 용사'
-];
+/**
+ * ============================================================================
+ * [질문 1 ~ 질문 7 분기형 결정 트리 (DECISION_TREE_NODES)]
+ * ============================================================================
+ */
+const DECISION_TREE_NODES = {
+  Q1: {
+    id: 'Q1',
+    stepNum: 1,
+    question: '질문 1. 메이플을 처음하는가?',
+    subtitle: '메이플스토리 보스전 및 시스템 숙련도 확인',
+    yesLabel: '⭕ 예 (처음입니다)',
+    yesDesc: '질문 3 (조작 편의성)으로 이동',
+    yesNext: 'Q3',
+    noLabel: '❌ 아니오 (경험자입니다)',
+    noDesc: '질문 2 (성능픽 여부)로 이동',
+    noNext: 'Q2'
+  },
+  Q2: {
+    id: 'Q2',
+    stepNum: 2,
+    question: '질문 2. 성능픽을 할 것인가?',
+    subtitle: '체급·전투 효율 고점을 우선할지 여부',
+    yesLabel: '⭕ 예 (성능픽 선호)',
+    yesDesc: '질문 3 (조작 편의성)으로 이동',
+    yesNext: 'Q3',
+    noLabel: '❌ 아니오 (취향/손맛 우선)',
+    noDesc: '질문 4 (손 바쁨 선호도)로 이동',
+    noNext: 'Q4'
+  },
+  Q3: {
+    id: 'Q3',
+    stepNum: 3,
+    question: '질문 3. 조작이 편한것을 할 것인가?',
+    subtitle: '복잡한 커맨드 대신 직관적인 조작을 선호하는지 확인',
+    yesLabel: '⭕ 예 (조작이 편한 직업)',
+    yesDesc: '질문 5 (극딜 선호 여부)로 이동',
+    yesNext: 'Q5',
+    noLabel: '❌ 아니오 (조작 난이도 무관)',
+    noDesc: '질문 6 (연계 직업 선호 여부)으로 이동',
+    noNext: 'Q6'
+  },
+  Q4: {
+    id: 'Q4',
+    stepNum: 4,
+    question: '질문 4. 손이 바쁜 직업을 할 것인가?',
+    subtitle: '스킬 가용횟수 기준 정렬 vs 성능 우선 정렬 결정',
+    yesLabel: '⭕ 예',
+    yesDesc: '선택 캐릭터 중 스킬 가용횟수가 적은것을 내림차순으로 정렬',
+    yesNext: 'RESULT_CAST_SORT',
+    noLabel: '❌ 아니오',
+    noDesc: '선택 캐릭터 중 성능 우선으로 정렬',
+    noNext: 'RESULT_PERF_SORT'
+  },
+  Q5: {
+    id: 'Q5',
+    stepNum: 5,
+    question: '질문 5. 극딜 캐릭이 좋은가?',
+    subtitle: '30초 극딜 압축형(≥50%) 선호 여부 판별',
+    yesLabel: '⭕ 예 (극딜 캐릭 선호)',
+    yesDesc: '질문 7 (손 바쁨 선호 여부)로 이동',
+    yesNext: 'Q7',
+    noLabel: '❌ 아니오 (지속/평딜 포함)',
+    noDesc: '질문 6 (연계 직업 선호 여부)으로 이동',
+    noNext: 'Q6'
+  },
+  Q6: {
+    id: 'Q6',
+    stepNum: 6,
+    question: '질문 6. 연계직업이 좋은가?',
+    subtitle: '카데나·블래·칼리·에반·제로·메르·아크·스커 (8종) 포함 여부 결정',
+    yesLabel: '⭕ 예 (연계 직업 좋음)',
+    yesDesc: '연계 직업을 포함하여 성능 우선으로 정렬',
+    yesNext: 'RESULT_PERF_SORT',
+    noLabel: '❌ 아니오 (연계 직업 제외)',
+    noDesc: '8대 연계 직업(카데나 등)을 완전히 제외하고 정렬',
+    noNext: 'RESULT_NO_COMBO_SORT'
+  },
+  Q7: {
+    id: 'Q7',
+    stepNum: 7,
+    question: '질문 7. 손이 바쁜게 좋은가?',
+    subtitle: '극딜 선호 캐릭터 중 성능 우선 vs 스킬 가용횟수 정렬 결정',
+    yesLabel: '⭕ 예 (손 바빠도 성능 고점)',
+    yesDesc: '선택 캐릭터 중 성능 우선으로 정렬',
+    yesNext: 'RESULT_PERF_SORT',
+    noLabel: '❌ 아니오 (손 편한 저타수)',
+    noDesc: '선택 캐릭터 중 스킬 가용횟수가 적은것을 내림차순으로 정렬',
+    noNext: 'RESULT_CAST_SORT'
+  }
+};
 
-const KNOWN_ATTACK_SUB_KEYWORDS = [
-  '윌 오브 소드', '드래곤 블레이즈', '윙비트', '솔 헤카테', '에고 웨폰', '오라 웨폰(파동)', '스톰 브레이크', '어스 브레이크', '트랜스젠던스'
-];
+const ICON_PATHS = {
+  activity: `<path d="M3 12h4l2.2-7 4.2 14 2.1-7H21" />`,
+  arrow: `<path d="M5 12h14M13 6l6 6-6 6" />`,
+  bolt: `<path d="m13 2-9 12h8l-1 8 9-12h-8z" />`,
+  chart: `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />`,
+  chevron: `<path d="m6 9 6 6 6-6" />`,
+  clock: `<circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />`,
+  filter: `<path d="M4 5h16M7 12h10M10 19h4" />`,
+  key: `<circle cx="8" cy="15" r="4" /><path d="m11 12 8-8M16 7l2 2M14 9l2 2" />`,
+  layers: `<path d="m12 2 9 5-9 5-9-5zM3 12l9 5 9-5M3 17l9 5 9-5" />`,
+  search: `<circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />`,
+  shield: `<path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10Z" /><path d="m9 12 2 2 4-5" />`,
+  spark: `<path d="m12 2 1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" />`,
+  target: `<circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4" /><path d="M12 3v3M21 12h-3M12 21v-3M3 12h3" />`,
+  users: `<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />`
+};
+
+function createIconSvg(name, size = 16) {
+  const path = ICON_PATHS[name] || ICON_PATHS.spark;
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">${path}</svg>`;
+}
 
 const JOB_NAME_ALIASES = {
   '캐논마스터': ['캐논마스터', '캐논슈터'],
@@ -21,1170 +176,445 @@ const JOB_NAME_ALIASES = {
   '듀얼블레이드': ['듀얼블레이드', '듀얼블레이더']
 };
 
-const HEXA_CORE_COST_TABLE = {
-  mastery: [0, 50, 15, 18, 20, 23, 25, 28, 30, 33, 100, 40, 45, 50, 55, 60, 65, 70, 75, 80, 175, 85, 90, 95, 100, 105, 110, 115, 120, 125, 250],
-  enhancement: [0, 75, 23, 27, 30, 34, 38, 42, 45, 49, 150, 60, 68, 75, 83, 90, 98, 105, 113, 120, 263, 128, 135, 143, 150, 158, 165, 173, 180, 188, 375],
-  skill: [0, 100, 30, 35, 40, 45, 50, 55, 60, 65, 200, 80, 90, 100, 110, 120, 130, 140, 150, 160, 350, 170, 180, 190, 200, 210, 220, 230, 240, 250, 500],
-  common: [0, 125, 38, 44, 50, 57, 63, 69, 75, 82, 300, 110, 124, 138, 152, 165, 179, 193, 207, 220, 525, 234, 248, 262, 275, 289, 303, 317, 330, 344, 750]
-};
-
-const HEXA_FRAGMENT_TABLE = {
-  '히어로': [[64.22, 1979], [73.54, 5004], [81.08, 9905], [89.68, 19554], [99.42, 39731]],
-  '배틀메이지': [[67.92, 2007], [72.72, 5115], [79.29, 10017], [87.96, 20204], [97.72, 39442]],
-  '메카닉': [[67.57, 2141], [72.31, 4880], [79.62, 9971], [88.22, 19796], [98.37, 39888]],
-  '아크': [[67.55, 2029], [73.39, 4798], [82.09, 10033], [90.60, 19923], [98.90, 39754]],
-  '윈드브레이커': [[67.35, 2012], [72.61, 5095], [79.60, 10104], [88.03, 20251], [98.27, 40267]],
-  '카이저': [[67.28, 2010], [74.26, 4770], [81.50, 10002], [89.72, 20315], [98.39, 40121]],
-  '렌': [[67.26, 2052], [73.03, 5022], [80.95, 10208], [89.10, 20180], [98.53, 40517]],
-  '은월': [[66.68, 2013], [72.87, 5011], [80.97, 10018], [89.15, 20013], [98.24, 40092]],
-  '제로': [[66.52, 1951], [76.91, 4979], [83.96, 9941], [91.69, 20042], [99.32, 40442]],
-  '캡틴': [[66.27, 2015], [72.55, 5164], [80.15, 9959], [88.81, 20273], [98.51, 39892]],
-  '블래스터': [[66.06, 2112], [71.76, 5160], [78.92, 9737], [88.48, 20025], [98.24, 39570]],
-  '일리움': [[65.65, 2047], [74.57, 5055], [81.82, 10005], [90.28, 19941], [98.93, 39916]],
-  '팬텀': [[65.45, 2137], [70.93, 5137], [78.18, 10103], [87.15, 20662], [98.08, 40017]],
-  '레테': [[65.29, 2103], [74.51, 4945], [83.44, 10003], [91.55, 20590], [99.06, 40481]],
-  '아란': [[64.99, 2060], [71.96, 4944], [79.00, 10161], [87.55, 19657], [98.28, 40517]],
-  '에반': [[64.92, 2140], [71.52, 4717], [79.06, 10201], [88.78, 19885], [98.51, 40025]],
-  '소울마스터': [[64.85, 1998], [73.19, 4999], [80.38, 10269], [89.09, 19905], [98.63, 40242]],
-  '다크나이트': [[64.77, 2083], [71.71, 5330], [79.31, 9952], [88.86, 19928], [98.34, 40430]],
-  '섀도어': [[64.71, 1977], [73.69, 5127], [80.70, 10035], [89.38, 19918], [99.23, 39736]],
-  '신궁': [[64.50, 2175], [70.22, 4998], [78.07, 9842], [88.73, 20019], [98.26, 39570]],
-  '제논': [[64.49, 2007], [69.88, 5009], [77.75, 10036], [87.51, 20661], [98.00, 39401]],
-  '루미너스': [[64.46, 2037], [72.19, 4898], [79.01, 9730], [88.74, 20067], [98.58, 40365]],
-  '보우마스터': [[64.34, 2020], [71.22, 5325], [79.19, 10035], [88.55, 20588], [98.65, 40067]],
-  '키네시스': [[64.26, 1968], [73.04, 5007], [81.07, 10140], [89.39, 19210], [99.55, 40229]],
-  '나이트로드': [[64.04, 2064], [70.46, 4735], [78.05, 10086], [87.63, 20468], [97.82, 39291]],
-  '칼리': [[63.89, 2016], [72.41, 5034], [79.64, 10096], [88.59, 19793], [98.78, 40616]],
-  '데몬슬레이어': [[63.88, 1845], [70.81, 5046], [79.69, 10768], [88.24, 20003], [98.42, 40073]],
-  '아크메이지(불,독)': [[63.79, 1957], [73.01, 4877], [80.47, 10058], [88.75, 20383], [98.38, 40590]],
-  '패스파인더': [[63.71, 1909], [72.94, 4698], [80.91, 9905], [88.96, 19572], [98.51, 40060]],
-  '플레임위자드': [[63.66, 2003], [69.42, 5019], [77.98, 10204], [87.03, 20306], [98.03, 39957]],
-  '카인': [[63.57, 2055], [72.09, 4838], [80.27, 9689], [90.48, 20888], [98.38, 39432]],
-  '팔라딘': [[63.54, 2006], [71.00, 4941], [78.13, 9980], [87.90, 20031], [98.43, 40048]],
-  '나이트워커': [[63.49, 2005], [70.89, 4906], [77.10, 9737], [87.54, 20693], [98.21, 40004]],
-  '아크메이지(썬,콜)': [[63.39, 2034], [71.53, 5073], [78.84, 10014], [87.85, 20031], [98.01, 39860]],
-  '호영': [[63.23, 2016], [72.31, 5303], [79.72, 10074], [89.62, 19886], [98.64, 40150]],
-  '데몬어벤져': [[63.12, 1878], [71.61, 4967], [79.30, 9952], [88.09, 20028], [98.52, 40132]],
-  '엔젤릭버스터': [[62.91, 1934], [72.85, 5197], [80.61, 9937], [89.52, 20038], [98.46, 40022]],
-  '와일드헌터': [[62.90, 1928], [71.74, 4940], [79.99, 10026], [88.85, 20253], [98.41, 40142]],
-  '듀얼블레이드': [[62.56, 1895], [70.28, 5008], [77.04, 9971], [87.33, 20135], [98.33, 40967]],
-  '듀얼블레이더': [[62.56, 1895], [70.28, 5008], [77.04, 9971], [87.33, 20135], [98.33, 40967]],
-  '아델': [[62.30, 2010], [71.06, 5019], [79.03, 10163], [88.72, 19933], [98.38, 39954]],
-  '메르세데스': [[62.25, 2009], [69.94, 4966], [77.31, 9959], [87.59, 20284], [98.28, 40069]],
-  '캐논슈터': [[61.46, 2019], [70.05, 4798], [78.45, 9961], [88.85, 20186], [98.16, 39865]],
-  '캐논마스터': [[61.46, 2019], [70.05, 4798], [78.45, 9961], [88.85, 20186], [98.16, 39865]],
-  '라라': [[61.29, 1957], [70.61, 5072], [78.19, 9809], [87.95, 19857], [97.89, 39518]],
-  '바이퍼': [[61.01, 2019], [68.61, 4779], [76.86, 9997], [87.49, 20354], [98.31, 39442]],
-  '미하일': [[60.72, 1988], [69.15, 5031], [77.18, 10296], [87.42, 19907], [98.07, 39550]],
-  '카데나': [[60.11, 1782], [70.73, 4996], [79.58, 9879], [88.79, 19483], [98.48, 39996]],
-  '스트라이커': [[59.67, 1977], [68.60, 5004], [76.89, 10115], [87.42, 19714], [98.67, 41462]],
-  '비숍': [[59.42, 1989], [69.57, 5149], [77.33, 10038], [87.79, 20269], [97.97, 39935]]
-};
-
-const MASTER_JOB_LIST = Object.keys(HEXA_FRAGMENT_TABLE).filter(
-  j => j !== '듀얼블레이더' && j !== '캐논마스터'
-);
-
-const HERO_CALIBRATED_FULL_INDEX = 819.5;
-const BP_EFF_TO_INDEX_DIVISOR = 12;
-
-class NexonMapleApi {
-  constructor(apiKey) {
-    this.baseUrl = 'https://open.api.nexon.com/maplestory/v1';
-    this.apiKey = apiKey ? apiKey.trim() : '';
-  }
-
-  async request(endpoint, params = {}, timeoutMs = 8000, retries = 2) {
-    if (!this.apiKey) throw new Error('API Key가 입력되지 않았습니다.');
-    const url = new URL(`${this.baseUrl}${endpoint}`);
-    Object.entries(params).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== '') url.searchParams.append(k, v);
-    });
-
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'x-nxopen-api-key': this.apiKey,
-            'Accept': 'application/json'
-          },
-          signal: controller.signal
-        });
-        clearTimeout(timer);
-
-        if (res.status === 429 && attempt < retries) {
-          await new Promise(r => setTimeout(r, 1000 * attempt));
-          continue;
-        }
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error?.message || `HTTP 오류 ${res.status}`);
-        }
-        return await res.json();
-      } catch (err) {
-        clearTimeout(timer);
-        if (err.name === 'AbortError') {
-          if (attempt < retries) continue;
-          throw new Error('API 응답 시간 초과 (Timeout)');
-        }
-        if (attempt >= retries) throw err;
-        await new Promise(r => setTimeout(r, 600));
-      }
+function formatKoreanNumber(num) {
+  if (!num || isNaN(num) || Number(num) <= 0) return '-';
+  try {
+    const n = BigInt(Math.floor(Number(num)));
+    if (n === 0n) return '0';
+    const units = ['', '만', '억', '조', '경'];
+    let res = [], temp = n, idx = 0;
+    while (temp > 0n && idx < units.length) {
+      const part = temp % 10000n;
+      if (part > 0n) res.unshift(`${part.toString()}${units[idx]}`);
+      temp /= 10000n;
+      idx++;
     }
-  }
-
-  getAccountCharacters() { return this.request('/character/list'); }
-  getOcid(characterName) { return this.request('/id', { character_name: characterName }); }
-  getCharacterBasic(ocid) { return this.request('/character/basic', { ocid }); }
-  getCharacterStat(ocid) { return this.request('/character/stat', { ocid }); }
-  getCharacterHexaMatrix(ocid) { return this.request('/character/hexamatrix', { ocid }); }
-  getBattlePracticeReplayIds(ocid, date) { return this.request('/battle-practice/replay-id', { ocid, date }); }
-  getBattlePracticeResult(replayId) { return this.request('/battle-practice/result', { replay_id: replayId }); }
-  getBattlePracticeCharacterInfo(replayId) { return this.request('/battle-practice/character-info', { replay_id: replayId }); }
-
-  async getCharacterSkillsByGrades(ocid, grades = ['5', '6']) {
-    const skillMetaMap = {};
-    const gradeLabels = { '4': '4차', 'hyperactive': '하이퍼', '5': '5차', '6': '6차' };
-
-    for (const g of grades) {
-      try {
-        await new Promise(r => setTimeout(r, 180));
-        const res = await this.request('/character/skill', { ocid, character_skill_grade: g });
-        const list = res.character_skill || [];
-        const grade = gradeLabels[g] || g;
-        list.forEach(sk => {
-          if (!sk.skill_name) return;
-          skillMetaMap[sk.skill_name] = {
-            name: sk.skill_name,
-            grade,
-            description: sk.skill_description || '',
-            effect: sk.skill_effect || ''
-          };
-        });
-      } catch (e) {}
-    }
-    return skillMetaMap;
-  }
-
-  async getBattlePracticeSkillTimelineAll(replayId) {
-    let allTimelines = [];
-    let pageNo = 1;
-    let totalPage = 1;
-
-    do {
-      try {
-        if (pageNo > 1) await new Promise(r => setTimeout(r, 150));
-        const res = await this.request('/battle-practice/skill-timeline', { replay_id: replayId, page_no: pageNo });
-        if (res && Array.isArray(res.skill_timeline)) {
-          allTimelines = allTimelines.concat(res.skill_timeline);
-        }
-        totalPage = Number(res.total_page_no) || 1;
-        pageNo++;
-      } catch (err) {
-        break;
-      }
-    } while (pageNo <= totalPage && pageNo <= 20);
-
-    return allTimelines;
+    return res.join(' ');
+  } catch {
+    return String(num);
   }
 }
 
-const Utils = {
-  formatKoreanNumber(num) {
-    if (num === undefined || num === null || isNaN(num) || Number(num) <= 0) return '-';
-    try {
-      const n = BigInt(Math.floor(Number(num)));
-      if (n === 0n) return '0';
-      const units = ['', '만', '억', '조', '경'];
-      let res = [], temp = n, idx = 0;
-      while (temp > 0n && idx < units.length) {
-        const part = temp % 10000n;
-        if (part > 0n) res.unshift(`${part.toString()}${units[idx]}`);
-        temp /= 10000n;
-        idx++;
-      }
-      return res.join(' ');
-    } catch { return String(num); }
-  },
+class MapleLabDashboard {
+  constructor() {
+    this.STORAGE_KEY_CUSTOM_UTIL = 'MAPLE_SIM_CUSTOM_UTIL_DB_V3';
 
-  formatShortDate(dateStr) {
-    if (!dateStr) return '-';
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return String(dateStr).slice(0, 10);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}.${mm}.${dd}`;
-  },
+    this.localDb = {
+      currentSeasonKey: 'season_5',
+      seasons: { season_5: { name: '5기 연무장', records: [] } },
+      manualSkillCategories: {},
+      savedJobBurstProfiles: {},
+      customJobSkills: {},
+      customJobUtilityDb: {}
+    };
+    this.utilityDb = JSON.parse(JSON.stringify(DEFAULT_JOB_UTILITY_DB));
+    this.normalizeStrictComboAttackStyles();
+
+    // 기본 샘플 저레벨 캐릭터 풀 (API 로드 전에도 즉시 다중 선택 테스트 가능)
+    this.accountCharacters = [
+      { id: 'sample_1', nickname: '유니온아란', job: '아란', level: 200, world: '스카니아' },
+      { id: 'sample_2', nickname: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
+      { id: 'sample_3', nickname: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
+      { id: 'sample_4', nickname: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
+      { id: 'sample_5', nickname: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
+      { id: 'sample_6', nickname: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
+      { id: 'sample_7', nickname: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
+      { id: 'sample_8', nickname: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
+      { id: 'sample_9', nickname: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
+      { id: 'sample_10', nickname: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
+      { id: 'sample_11', nickname: '도원호영', job: '호영', level: 250, world: '스카니아' },
+      { id: 'sample_12', nickname: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
+    ];
+
+    this.selectedLowCharIds = new Set(this.accountCharacters.map(c => c.id));
+
+    // 질문 1~7 분기 트리 응답 상태 저장
+    this.treeAnswers = {
+      Q1: 'YES',
+      Q2: 'YES',
+      Q3: 'NO',
+      Q4: 'NO',
+      Q5: 'YES',
+      Q6: 'NO',
+      Q7: 'NO'
+    };
+    this.focusedQuestionId = 'Q1';
+
+    this.mainCenterViewMode = 'analytics';
+    this.activeTab = 'ranking';
+    this.rightOpen = true;
+    this.studioOpen = true;
+    this.studioSubTab = 'skills';
+    this.detailMode = 'burst';
+    this.simTab = 'recommend';
+    this.charViewMode = 'indiv';
+
+    this.selectedJob = '카이저';
+    this.burstThreshold = 50;
+    this.burstWindowSec = 30;
+    this.sortMode = 'EFF_DESC';
+    this.searchQuery = '';
+    this.currentPage = 1;
+    this.pageSize = 12;
+    this.showAllJobs = false;
+
+    this.selectedBurstSkillMap = {};
+    this.burstSumCalcMode = 'ATTR_30';
+
+    this.injectStaticIcons();
+    this.cacheDom();
+    this.bindEvents();
+    this.initData();
+  }
+
+  // 오직 8대 연계 직업만 COMBO_CDR로 설정하고, 나머지 40개 직업은 비연계로 정규화
+  normalizeStrictComboAttackStyles() {
+    Object.keys(this.utilityDb).forEach(jobName => {
+      if (STRICT_COMBO_JOBS_DB[jobName]) {
+        this.utilityDb[jobName].attackStyle = 'COMBO_CDR';
+      } else if (this.utilityDb[jobName].attackStyle === 'COMBO_CDR') {
+        this.utilityDb[jobName].attackStyle = 'HOLD_660';
+      }
+    });
+  }
+
+  injectStaticIcons() {
+    const brandSpark = document.getElementById('brandSparkIcon');
+    if (brandSpark) brandSpark.innerHTML = createIconSvg('spark', 20);
+
+    const searchBtn = document.getElementById('topQuickSearchBtn');
+    if (searchBtn) searchBtn.innerHTML = `${createIconSvg('search', 16)} 전체 48직업 펼치기`;
+
+    const extBtn = document.getElementById('toggleExtensionBtn');
+    if (extBtn) extBtn.innerHTML = `${createIconSvg('bolt', 16)} 분석 패널 닫기`;
+
+    document.querySelectorAll('[data-icon]').forEach(el => {
+      const name = el.getAttribute('data-icon');
+      const size = Number(el.getAttribute('data-size')) || 16;
+      el.innerHTML = createIconSvg(name, size);
+    });
+  }
+
+  cacheDom() {
+    this.mainWorkspace = document.getElementById('mainWorkspace');
+    this.analyticsMainView = document.getElementById('analyticsMainView');
+    this.jobRecommendOverlayView = document.getElementById('jobRecommendOverlayView');
+
+    this.rightDetailPanel = document.getElementById('rightDetailPanel');
+    this.customDbStudioPanel = document.getElementById('customDbStudioPanel');
+    this.toggleExtensionBtn = document.getElementById('toggleExtensionBtn');
+    this.toggleCustomStudioBtn = document.getElementById('toggleCustomStudioBtn');
+    this.toggleMainRecommendBtn = document.getElementById('toggleMainRecommendBtn');
+    this.studioOpenRecommendWizardBtn = document.getElementById('studioOpenRecommendWizardBtn');
+    this.backToAnalyticsBtn = document.getElementById('backToAnalyticsBtn');
+    this.closeStudioPanelBtn = document.getElementById('closeStudioPanelBtn');
+    this.topQuickSearchBtn = document.getElementById('topQuickSearchBtn');
+    this.rankJobFilter = document.getElementById('rankJobFilter');
+
+    this.apiKeyInput = document.getElementById('apiKeyInput');
+    this.toggleApiKeyVisBtn = document.getElementById('toggleApiKeyVisBtn');
+    this.loadAccountBtn = document.getElementById('loadAccountBtn');
+    this.apiStatusBadge = document.getElementById('apiStatusBadge');
+    this.worldFilterSelect = document.getElementById('worldFilterSelect');
+    this.maxLevelInput = document.getElementById('maxLevelInput');
+    this.nicknameSearchInput = document.getElementById('nicknameSearchInput');
+    this.nicknameSearchBtn = document.getElementById('nicknameSearchBtn');
+
+    this.charCountBadge = document.getElementById('charCountBadge');
+    this.charViewIndivBtn = document.getElementById('charViewIndivBtn');
+    this.charViewJobBtn = document.getElementById('charViewJobBtn');
+    this.sidebarCharListContainer = document.getElementById('sidebarCharListContainer');
+
+    this.cycleThresholdBtn = document.getElementById('cycleThresholdBtn');
+    this.classifierThresholdLabel = document.getElementById('classifierThresholdLabel');
+    this.classifierMiniDonut = document.getElementById('classifierMiniDonut');
+    this.classifierMiniDonutText = document.getElementById('classifierMiniDonutText');
+    this.burstJobCountEm = document.getElementById('burstJobCountEm');
+    this.sustainJobCountEm = document.getElementById('sustainJobCountEm');
+    this.burstJobPills = document.getElementById('burstJobPills');
+    this.sustainJobPills = document.getElementById('sustainJobPills');
+
+    this.seasonFilterSelect = document.getElementById('seasonFilterSelect');
+    this.mainJobFilterSelect = document.getElementById('mainJobFilterSelect');
+
+    this.kpiTotalRecords = document.getElementById('kpiTotalRecords');
+    this.kpiSeasonSub = document.getElementById('kpiSeasonSub');
+    this.kpiAvgDps = document.getElementById('kpiAvgDps');
+    this.kpiMaxEff = document.getElementById('kpiMaxEff');
+    this.kpiMaxEffJob = document.getElementById('kpiMaxEffJob');
+    this.kpiCustomCount = document.getElementById('kpiCustomCount');
+
+    this.mainContentTabs = document.getElementById('mainContentTabs');
+    this.tabRankingCountBadge = document.getElementById('tabRankingCountBadge');
+    this.toolbarSortStatus = document.getElementById('toolbarSortStatus');
+    this.cycleSortModeBtn = document.getElementById('cycleSortModeBtn');
+    this.mainTableHead = document.getElementById('mainTableHead');
+    this.mainTableBody = document.getElementById('mainTableBody');
+    this.tableFooterSummary = document.getElementById('tableFooterSummary');
+    this.tablePagination = document.getElementById('tablePagination');
+
+    // 대화면 직업 추천 위자드 DOM
+    this.lowLevelCharStatusText = document.getElementById('lowLevelCharStatusText');
+    this.recLowLevelLimitInput = document.getElementById('recLowLevelLimitInput');
+    this.selectAllLowCharsBtn = document.getElementById('selectAllLowCharsBtn');
+    this.clearSelectedLowCharsBtn = document.getElementById('clearSelectedLowCharsBtn');
+    this.loadSampleLowCharsBtn = document.getElementById('loadSampleLowCharsBtn');
+    this.recLowLevelCharGrid = document.getElementById('recLowLevelCharGrid');
+
+    this.treeCurrentPathSummary = document.getElementById('treeCurrentPathSummary');
+    this.recTargetCpMan = document.getElementById('recTargetCpMan');
+    this.recTargetFrags = document.getElementById('recTargetFrags');
+    this.resetSurveyTreeBtn = document.getElementById('resetSurveyTreeBtn');
+    this.treeBreadcrumbBar = document.getElementById('treeBreadcrumbBar');
+    this.activeQuestionHeroBox = document.getElementById('activeQuestionHeroBox');
+    this.treeNodesOverviewBox = document.getElementById('treeNodesOverviewBox');
+
+    this.recResultHeaderTitle = document.getElementById('recResultHeaderTitle');
+    this.recSelectedCharCompareSummary = document.getElementById('recSelectedCharCompareSummary');
+    this.recPerfFormulaToggle = document.getElementById('recPerfFormulaToggle');
+    this.recCastOrderToggle = document.getElementById('recCastOrderToggle');
+    this.recCurrentCharBanner = document.getElementById('recCurrentCharBanner');
+    this.recResultCardsGrid = document.getElementById('recResultCardsGrid');
+
+    // 우측 분석 패널 DOM
+    this.detailJobTitle = document.getElementById('detailJobTitle');
+    this.detailJobAvatar = document.getElementById('detailJobAvatar');
+    this.detailModeTabs = document.getElementById('detailModeTabs');
+    this.detailBurstView = document.getElementById('detailBurstView');
+    this.detailCalcView = document.getElementById('detailCalcView');
+
+    this.detailScoreRing = document.getElementById('detailScoreRing');
+    this.detailBurstScoreVal = document.getElementById('detailBurstScoreVal');
+    this.detailBurstSourceBadge = document.getElementById('detailBurstSourceBadge');
+    this.detailRoleTypeTitle = document.getElementById('detailRoleTypeTitle');
+    this.detailBurstDiffText = document.getElementById('detailBurstDiffText');
+
+    this.detailRangeAccordionBtn = document.getElementById('detailRangeAccordionBtn');
+    this.detailRangeAccordionBody = document.getElementById('detailRangeAccordionBody');
+    this.detailTriggerSkillSelect = document.getElementById('detailTriggerSkillSelect');
+    this.rangeEndLabel = document.getElementById('rangeEndLabel');
+    this.burstWindowPresetRow = document.getElementById('burstWindowPresetRow');
+
+    this.metricBurstDmg = document.getElementById('metricBurstDmg');
+    this.metricSustainDmg = document.getElementById('metricSustainDmg');
+    this.metricApmCasts = document.getElementById('metricApmCasts');
+    this.metricBpEfficiency = document.getElementById('metricBpEfficiency');
+
+    this.calcHexaRateBadge = document.getElementById('calcHexaRateBadge');
+    this.calcStdRealDps = document.getElementById('calcStdRealDps');
+    this.calcMyRealDps = document.getElementById('calcMyRealDps');
+    this.calcClearTimeText = document.getElementById('calcClearTimeText');
+    this.calcUtilSummaryText = document.getElementById('calcUtilSummaryText');
+
+    this.inlineSimTabs = document.getElementById('inlineSimTabs');
+    this.inlineSimRecommendList = document.getElementById('inlineSimRecommendList');
+    this.inlineSimSettingsPanel = document.getElementById('inlineSimSettingsPanel');
+    this.inlineSimCountText = document.getElementById('inlineSimCountText');
+
+    this.inlineSimCpInput = document.getElementById('inlineSimCpInput');
+    this.inlineSimFragInput = document.getElementById('inlineSimFragInput');
+    this.inlineSimHatSelect = document.getElementById('inlineSimHatSelect');
+    this.inlineSimIframeSelect = document.getElementById('inlineSimIframeSelect');
+    this.inlineSimBossHpInput = document.getElementById('inlineSimBossHpInput');
+    this.inlineSimSortSelect = document.getElementById('inlineSimSortSelect');
+
+    // 커스텀 스튜디오 DOM
+    this.studioJobTitle = document.getElementById('studioJobTitle');
+    this.studioJobSelect = document.getElementById('studioJobSelect');
+    this.saveJobCustomDbBtn = document.getElementById('saveJobCustomDbBtn');
+    this.resetJobCustomDbBtn = document.getElementById('resetJobCustomDbBtn');
+    this.studioSaveStatusMsg = document.getElementById('studioSaveStatusMsg');
+    this.studioSubTabs = document.getElementById('studioSubTabs');
+    this.studioSkillsTabView = document.getElementById('studioSkillsTabView');
+    this.studioParamsTabView = document.getElementById('studioParamsTabView');
+
+    this.toggleBuffListAccordionBtn = document.getElementById('toggleBuffListAccordionBtn');
+    this.buffAndProcListBody = document.getElementById('buffAndProcListBody');
+    this.studioSkillSourceLabel = document.getElementById('studioSkillSourceLabel');
+    this.selectedSkillCountText = document.getElementById('selectedSkillCountText');
+    this.selectedBurstSumBtnText = document.getElementById('selectedBurstSumBtnText');
+    this.applySelectedBurstRateBtn = document.getElementById('applySelectedBurstRateBtn');
+    this.chip30AttrMode = document.getElementById('chip30AttrMode');
+    this.chip30AttrVal = document.getElementById('chip30AttrVal');
+    this.chipRawSumMode = document.getElementById('chipRawSumMode');
+    this.chipRawSumVal = document.getElementById('chipRawSumVal');
+    this.selectAllBurstSkillsBtn = document.getElementById('selectAllBurstSkillsBtn');
+    this.clearAllBurstSkillsBtn = document.getElementById('clearAllBurstSkillsBtn');
+    this.selectedSkillNamesSummary = document.getElementById('selectedSkillNamesSummary');
+    this.studioSkillListContainer = document.getElementById('studioSkillListContainer');
+
+    this.newCustomSkillName = document.getElementById('newCustomSkillName');
+    this.newCustomSkillRate = document.getElementById('newCustomSkillRate');
+    this.newCustomSkillRole = document.getElementById('newCustomSkillRole');
+    this.addCustomSkillBtn = document.getElementById('addCustomSkillBtn');
+
+    this.editJobBurstRate = document.getElementById('editJobBurstRate');
+    this.editJobAttackStyle = document.getElementById('editJobAttackStyle');
+    this.editJobStdDpmJo = document.getElementById('editJobStdDpmJo');
+    this.editJobBpEff = document.getElementById('editJobBpEff');
+    this.editJobRecHatSec = document.getElementById('editJobRecHatSec');
+    this.editJobCdrShare = document.getElementById('editJobCdrShare');
+    this.editJobCdrBaseCool = document.getElementById('editJobCdrBaseCool');
+    this.editJobCdrEffFactor = document.getElementById('editJobCdrEffFactor');
+    this.editJobHasIframe = document.getElementById('editJobHasIframe');
+    this.editJobIframeCool = document.getElementById('editJobIframeCool');
+    this.editJobIframeName = document.getElementById('editJobIframeName');
+    this.editJobNormActions = document.getElementById('editJobNormActions');
+    this.editJobProcCasts = document.getElementById('editJobProcCasts');
+  }
+
+  async initData() {
+    const savedKey = localStorage.getItem('NEXON_OPEN_API_KEY') || '';
+    if (this.apiKeyInput && savedKey) {
+      this.apiKeyInput.value = savedKey;
+      if (this.apiStatusBadge) {
+        this.apiStatusBadge.textContent = 'Key 저장됨';
+        this.apiStatusBadge.style.color = 'var(--green)';
+      }
+    }
+
+    const jobOpts = `<option value="ALL">전체 직업</option>` +
+      MASTER_JOB_LIST.map(j => `<option value="${j}">${j}</option>`).join('');
+    if (this.mainJobFilterSelect) this.mainJobFilterSelect.innerHTML = jobOpts;
+    if (this.rankJobFilter) this.rankJobFilter.innerHTML = jobOpts;
+    if (this.studioJobSelect) {
+      this.studioJobSelect.innerHTML = MASTER_JOB_LIST.map(j => `<option value="${j}">${j}</option>`).join('');
+    }
+
+    try {
+      const res = await ipcRenderer.invoke('load-local-db');
+      if (res && res.success && res.data) {
+        this.localDb = {
+          currentSeasonKey: 'season_5',
+          seasons: { season_5: { name: '5기 연무장', records: [] } },
+          manualSkillCategories: {},
+          savedJobBurstProfiles: {},
+          customJobSkills: {},
+          customJobUtilityDb: {},
+          ...res.data
+        };
+      }
+    } catch (e) {
+      console.warn('로컬 DB 로드 실패:', e);
+    }
+
+    this.loadMergedUtilityDb();
+    this.populateSeasonSelect();
+    this.syncStudioFormInputs(this.selectedJob);
+    this.renderAll();
+  }
+
+  loadMergedUtilityDb() {
+    this.utilityDb = JSON.parse(JSON.stringify(DEFAULT_JOB_UTILITY_DB));
+
+    try {
+      const savedLocal = localStorage.getItem(this.STORAGE_KEY_CUSTOM_UTIL);
+      if (savedLocal) {
+        const parsed = JSON.parse(savedLocal);
+        Object.keys(parsed).forEach(j => {
+          if (this.utilityDb[j]) this.utilityDb[j] = { ...this.utilityDb[j], ...parsed[j] };
+        });
+      }
+    } catch (e) {}
+
+    const dbCustomUtil = this.localDb?.customJobUtilityDb || {};
+    Object.keys(dbCustomUtil).forEach(j => {
+      if (this.utilityDb[j]) {
+        this.utilityDb[j] = { ...this.utilityDb[j], ...dbCustomUtil[j] };
+      }
+    });
+
+    const savedBurst = this.localDb?.savedJobBurstProfiles || {};
+    Object.keys(savedBurst).forEach(j => {
+      if (this.utilityDb[j] && typeof savedBurst[j].burstRate === 'number') {
+        this.utilityDb[j].burstRate = savedBurst[j].burstRate;
+      }
+    });
+
+    // 8대 연계 직업 기준으로 공격 유형 정규화
+    this.normalizeStrictComboAttackStyles();
+  }
+
+  async persistAllCustomDataToLocalDb(toastMessage = '✅ 로컬 DB(maple_local_db.json) 및 시뮬레이터에 즉시 저장되었습니다!') {
+    try {
+      localStorage.setItem(this.STORAGE_KEY_CUSTOM_UTIL, JSON.stringify(this.utilityDb));
+    } catch (e) {}
+
+    this.localDb.customJobUtilityDb = JSON.parse(JSON.stringify(this.utilityDb));
+
+    try {
+      await ipcRenderer.invoke('save-local-db', this.localDb);
+    } catch (e) {
+      console.error('로컬 DB 파일 저장 실패:', e);
+    }
+
+    if (this.studioSaveStatusMsg) {
+      this.studioSaveStatusMsg.textContent = toastMessage;
+      this.studioSaveStatusMsg.classList.remove('hidden');
+      clearTimeout(this._toastTimer);
+      this._toastTimer = setTimeout(() => {
+        this.studioSaveStatusMsg.classList.add('hidden');
+      }, 2800);
+    }
+  }
+
+  switchMainCenterView(mode) {
+    this.mainCenterViewMode = mode;
+    const isRec = mode === 'recommend';
+
+    if (this.analyticsMainView) this.analyticsMainView.classList.toggle('hidden', isRec);
+    if (this.jobRecommendOverlayView) this.jobRecommendOverlayView.classList.toggle('hidden', !isRec);
+
+    if (this.toggleMainRecommendBtn) {
+      this.toggleMainRecommendBtn.classList.toggle('active-rec-btn', isRec);
+      this.toggleMainRecommendBtn.textContent = isRec ? '📊 연무장 기록 분석 보기' : '🧭 대화면 직업추천 열기';
+    }
+
+    this.renderAll();
+  }
+
+  populateSeasonSelect() {
+    if (!this.seasonFilterSelect) return;
+    const seasons = this.localDb?.seasons || {};
+    const keys = Object.keys(seasons);
+    if (keys.length > 0) {
+      const curKey = this.localDb.currentSeasonKey || keys[0];
+      this.seasonFilterSelect.innerHTML = keys.map(k =>
+        `<option value="${k}" ${k === curKey ? 'selected' : ''}>${seasons[k].name || k}</option>`
+      ).join('');
+    }
+  }
+
+  getActiveRecords() {
+    if (!this.localDb) return [];
+    const seasons = this.localDb.seasons || {};
+    const selectedKey = this.seasonFilterSelect?.value || this.localDb.currentSeasonKey || Object.keys(seasons)[0];
+    if (seasons[selectedKey] && Array.isArray(seasons[selectedKey].records)) {
+      return seasons[selectedKey].records;
+    }
+    if (Array.isArray(this.localDb.records)) {
+      return this.localDb.records;
+    }
+    return [];
+  }
 
   isSameJob(jobA, jobB) {
     if (!jobA || !jobB) return false;
     if (jobA === jobB) return true;
     const aliases = JOB_NAME_ALIASES[jobA] || [jobA];
     return aliases.includes(jobB);
-  },
-
-  getCanonicalJobName(jobName) {
-    if (!jobName) return '';
-    if (jobName === '캐논마스터') return '캐논슈터';
-    if (jobName === '듀얼블레이더') return '듀얼블레이드';
-    return jobName;
-  },
-
-  calculateHexaFragmentsFromApi(hexaData) {
-    const cores = hexaData?.character_hexa_core_equipment || [];
-    if (!Array.isArray(cores) || cores.length === 0) {
-      return { combatFragments: 0, totalFragments: 0, summaryText: '6차 코어 정보 없음' };
-    }
-
-    let masteryFrags = 0, enhanceFrags = 0, skillFrags = 0, janusFrags = 0, skillCoreIdx = 0;
-
-    cores.forEach(core => {
-      const name = String(core.hexa_core_name || '');
-      const lv = Math.min(30, Math.max(0, Number(core.hexa_core_level) || 0));
-      if (lv <= 0) return;
-      const type = String(core.hexa_core_type || '');
-
-      if (type.includes('마스터리')) {
-        for (let i = 1; i <= lv; i++) masteryFrags += HEXA_CORE_COST_TABLE.mastery[i] || 0;
-      } else if (type.includes('강화')) {
-        for (let i = 1; i <= lv; i++) enhanceFrags += HEXA_CORE_COST_TABLE.enhancement[i] || 0;
-      } else if (type.includes('스킬')) {
-        skillCoreIdx++;
-        for (let i = 1; i <= lv; i++) {
-          if (i === 1 && skillCoreIdx === 1) continue;
-          skillFrags += HEXA_CORE_COST_TABLE.skill[i] || 0;
-        }
-      } else if (type.includes('공용')) {
-        if (name.includes('야누스')) {
-          for (let i = 1; i <= lv; i++) janusFrags += HEXA_CORE_COST_TABLE.common[i] || 0;
-        } else {
-          for (let i = 1; i <= lv; i++) skillFrags += HEXA_CORE_COST_TABLE.skill[i] || 0;
-        }
-      }
-    });
-
-    const combatFragments = masteryFrags + enhanceFrags + skillFrags;
-    const totalFragments = combatFragments + janusFrags;
-    const summaryText = `마스터리 ${masteryFrags.toLocaleString()} + 강화 ${enhanceFrags.toLocaleString()} + 스킬 ${skillFrags.toLocaleString()}`;
-
-    return { combatFragments, totalFragments, summaryText };
-  },
-
-  groupByJob(characters) {
-    const map = new Map();
-    characters.forEach(ch => {
-      const job = ch.character_class || '미분류';
-      const lv = Number(ch.character_level) || 0;
-      if (!map.has(job)) map.set(job, []);
-      map.get(job).push(lv);
-    });
-    const list = [];
-    for (const [job, levels] of map.entries()) {
-      levels.sort((a, b) => b - a);
-      list.push({ job, count: levels.length, levels, maxLv: levels[0] || 0 });
-    }
-    return list.sort((a, b) => b.maxLv - a.maxLv || b.count - a.count);
-  },
-
-  sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-};
-
-class MapleDashboardApp {
-  constructor() {
-    this.STORAGE_KEY_API = 'NEXON_MAPLE_API_KEY';
-    this.STORAGE_KEY_MANUAL_CATS = 'MAPLE_MANUAL_SKILL_CATS_V2';
-    this.STORAGE_KEY_SAVED_BURST_PROFILES = 'MAPLE_SAVED_JOB_BURST_PROFILES_V1';
-
-    this.api = null;
-    this.allCharacters = [];
-    this.filteredCharacters = [];
-
-    this.seasonsDb = new Map();
-    this.currentSeasonKey = 'season_5';
-    this.skillClassificationDb = {};
-
-    this.savedJobBurstProfiles = {};
-    this.burstRateCalcMode = 'formulaBurst';
-    this.customBurstRateInputVal = null;
-
-    this.currentSelectedRecord = null;
-    this.currentTimelineInterval = 30;
-    this.top20TimelineInterval = 30;
-    this.selectedSkills = new Set();
-
-    this.isExtensionOpen = true;
-    this.hideBuffsInMainTimeline = true;
-    this.currentBurstTriggerSkill = '';
-    this.burstWindowSeconds = 30;
-    this.selectedBurstRound = 'ALL';
-
-    this.isManualCutoffOverride = false;
-    this.jobBurstStatsCache = new Map();
-    this.top20SortKey = 'use';
-
-    this.cacheDom();
-    this.initBaselineJobSelect();
-    this.restoreSavedData();
-    this.bindEvents();
   }
 
-  get recordsDb() {
-    if (!this.seasonsDb.has(this.currentSeasonKey)) {
-      this.seasonsDb.set(this.currentSeasonKey, {
-        name: '5기 연무장',
-        recordsMap: new Map()
-      });
-    }
-    return this.seasonsDb.get(this.currentSeasonKey).recordsMap;
-  }
-
-  cacheDom() {
-    this.apiKeyInput = document.getElementById('apiKeyInput');
-    this.toggleKeyBtn = document.getElementById('toggleKeyBtn');
-    this.loadAccountBtn = document.getElementById('loadAccountBtn');
-    this.worldSelect = document.getElementById('worldSelect');
-    this.maxLevelInput = document.getElementById('maxLevelInput');
-    this.directCharInput = document.getElementById('directCharInput');
-    this.directSearchBtn = document.getElementById('directSearchBtn');
-    this.statusBadge = document.getElementById('statusBadge');
-
-    this.charCountInfo = document.getElementById('charCountInfo');
-    this.tabCharList = document.getElementById('tabCharList');
-    this.tabJobSummary = document.getElementById('tabJobSummary');
-    this.charListTable = document.getElementById('charListTable');
-    this.jobSummaryTable = document.getElementById('jobSummaryTable');
-    this.charListBody = document.getElementById('charListBody');
-    this.jobSummaryBody = document.getElementById('jobSummaryBody');
-
-    this.burstBaselineStatusText = document.getElementById('burstBaselineStatusText');
-    this.baselineJobSelect = document.getElementById('baselineJobSelect');
-    this.burstCutoffInput = document.getElementById('burstCutoffInput');
-    this.omegaBaseInput = document.getElementById('omegaBaseInput');
-    this.omegaBuffClassInput = document.getElementById('omegaBuffClassInput');
-    this.filterOnlyMyAccountJobsChk = document.getElementById('filterOnlyMyAccountJobsChk');
-    this.burstJobCountBadge = document.getElementById('burstJobCountBadge');
-    this.sustainedJobCountBadge = document.getElementById('sustainedJobCountBadge');
-    this.unclassifiedJobCountBadge = document.getElementById('unclassifiedJobCountBadge');
-    this.burstJobsContainer = document.getElementById('burstJobsContainer');
-    this.sustainedJobsContainer = document.getElementById('sustainedJobsContainer');
-    this.unclassifiedJobsContainer = document.getElementById('unclassifiedJobsContainer');
-
-    this.seasonSelect = document.getElementById('seasonSelect');
-    this.addSeasonBtn = document.getElementById('addSeasonBtn');
-    this.seasonPeriodBadge = document.getElementById('seasonPeriodBadge');
-    this.toggleExtensionBtn = document.getElementById('toggleExtensionBtn');
-    this.rightExtensionBox = document.getElementById('rightExtensionBox');
-
-    this.rankJobFilter = document.getElementById('rankJobFilter');
-    this.totalRecordBadge = document.getElementById('totalRecordBadge');
-
-    this.chuchuRankView = document.getElementById('chuchuRankView');
-    this.allRecordsView = document.getElementById('allRecordsView');
-    this.top20SkillsView = document.getElementById('top20SkillsView');
-    this.singleDetailView = document.getElementById('singleDetailView');
-    this.chuchuRankBody = document.getElementById('chuchuRankBody');
-    this.allRecordsBody = document.getElementById('allRecordsBody');
-    this.top20SkillsBody = document.getElementById('top20SkillsBody');
-
-    this.clearTop20SelectionBtn = document.getElementById('clearTop20SelectionBtn');
-    this.top20BurstSaveBanner = document.getElementById('top20BurstSaveBanner');
-    this.top20SelectedSummary = document.getElementById('top20SelectedSummary');
-    this.top20TimelineIntervalSelect = document.getElementById('top20TimelineIntervalSelect');
-    this.top20TimelineAccordionContainer = document.getElementById('top20TimelineAccordionContainer');
-
-    this.modeChuchuRank = document.getElementById('modeChuchuRank');
-    this.modeAllRecords = document.getElementById('modeAllRecords');
-    this.modeTop20Skills = document.getElementById('modeTop20Skills');
-    this.modeSingleDetail = document.getElementById('modeSingleDetail');
-
-    this.cardCharJob = document.getElementById('cardCharJob');
-    this.cardDps = document.getElementById('cardDps');
-    this.cardCombatPower = document.getElementById('cardCombatPower');
-    this.cardEfficiency = document.getElementById('cardEfficiency');
-    this.detailRecordDateInfo = document.getElementById('detailRecordDateInfo');
-    this.bpSkillTableBody = document.getElementById('bpSkillTableBody');
-
-    this.hideBuffsInMainTimelineChk = document.getElementById('hideBuffsInMainTimelineChk');
-    this.timelineIntervalSelect = document.getElementById('timelineIntervalSelect');
-    this.timelineSkillDropdownBtn = document.getElementById('timelineSkillDropdownBtn');
-    this.timelineSkillDropdownContent = document.getElementById('timelineSkillDropdownContent');
-    this.timelineAccordionContainer = document.getElementById('timelineAccordionContainer');
-
-    this.extTargetCharLabel = document.getElementById('extTargetCharLabel');
-    this.buffCountBadge = document.getElementById('buffCountBadge');
-    this.separatedBuffListContainer = document.getElementById('separatedBuffListContainer');
-
-    this.skillDbCountBadge = document.getElementById('skillDbCountBadge');
-    this.fetchApiSkillMetaBtn = document.getElementById('fetchApiSkillMetaBtn');
-    this.skillDbCategoryFilter = document.getElementById('skillDbCategoryFilter');
-    this.skillClassifierTableBody = document.getElementById('skillClassifierTableBody');
-
-    this.burstTriggerSkillSelect = document.getElementById('burstTriggerSkillSelect');
-    this.burstWindowSecInput = document.getElementById('burstWindowSecInput');
-    this.burstRoundSelect = document.getElementById('burstRoundSelect');
-    this.burstSummaryContainer = document.getElementById('burstSummaryContainer');
-    this.extBurstSkillSaveLine = document.getElementById('extBurstSkillSaveLine');
-    this.burstWindowsAccordionContainer = document.getElementById('burstWindowsAccordionContainer');
-
-    this.calcJobPresetSelect = document.getElementById('calcJobPresetSelect');
-    this.calcFullPInput = document.getElementById('calcFullPInput');
-    this.calcBasePInput = document.getElementById('calcBasePInput');
-    this.applyHeroCalibrationBtn = document.getElementById('applyHeroCalibrationBtn');
-    this.calcBpSyncInfo = document.getElementById('calcBpSyncInfo');
-    this.calcHexaRateBadge = document.getElementById('calcHexaRateBadge');
-    this.calcFragTierButtons = document.getElementById('calcFragTierButtons');
-
-    this.calcQ2Input = document.getElementById('calcQ2Input');
-    this.calcT2Input = document.getElementById('calcT2Input');
-    this.calcU2Output = document.getElementById('calcU2Output');
-    this.calcR2Output = document.getElementById('calcR2Output');
-    this.calcS2Output = document.getElementById('calcS2Output');
-
-    this.calcQ3Input = document.getElementById('calcQ3Input');
-    this.calcU3Output = document.getElementById('calcU3Output');
-    this.calcR3Output = document.getElementById('calcR3Output');
-    this.calcS3Output = document.getElementById('calcS3Output');
-
-    this.calcCharCpManInput = document.getElementById('calcCharCpManInput');
-    this.calcCharCpKoreanLabel = document.getElementById('calcCharCpKoreanLabel');
-    this.calcForceMultInput = document.getElementById('calcForceMultInput');
-    this.calcBossHpJoInput = document.getElementById('calcBossHpJoInput');
-    this.calcRealFactorInput = document.getElementById('calcRealFactorInput');
-
-    this.calcRealBossDpsOutput = document.getElementById('calcRealBossDpsOutput');
-    this.calcPureBossDpsOutput = document.getElementById('calcPureBossDpsOutput');
-    this.calcClearTimeOutput = document.getElementById('calcClearTimeOutput');
-    this.calc18MinTotalOutput = document.getElementById('calc18MinTotalOutput');
-  }
-
-  initBaselineJobSelect() {
-    if (!this.baselineJobSelect) return;
-    const sortedJobs = ['렌', ...MASTER_JOB_LIST.filter(j => j !== '렌')];
-    this.baselineJobSelect.innerHTML =
-      `<option value="FIXED_50" selected>50% 표준 기준 (극딜 50% 이상)</option>` +
-      sortedJobs.map(j => `<option value="${j}">${j}${j === '렌' ? ' (기점 연동)' : ''}</option>`).join('');
-  }
-
-  getCurrentActiveJobName() {
-    const filterVal = this.rankJobFilter ? this.rankJobFilter.value : 'ALL';
-    if (filterVal && filterVal !== 'ALL') {
-      return Utils.getCanonicalJobName(filterVal);
-    }
-    if (this.currentSelectedRecord && this.currentSelectedRecord.job) {
-      return Utils.getCanonicalJobName(this.currentSelectedRecord.job);
-    }
-    return '';
-  }
-
-  restoreSavedBurstSkillsForJob(jobName) {
-    const canonical = Utils.getCanonicalJobName(jobName);
-    const saved = this.savedJobBurstProfiles[canonical];
-    if (saved && Array.isArray(saved.skills) && saved.skills.length > 0) {
-      this.selectedSkills = new Set(saved.skills);
-      this.customBurstRateInputVal = saved.burstRate;
-      if (saved.metricMode) this.burstRateCalcMode = saved.metricMode;
-      return true;
-    }
-    this.customBurstRateInputVal = null;
-    return false;
-  }
-
-  evaluateBurstAttributionFormula(rec, customTriggerName = '', customWindowSec = null) {
-    if (!rec || !Array.isArray(rec.skills) || rec.skills.length === 0) {
-      return {
-        totalBurstShare: 0,
-        pureActiveBurstSum: 0,
-        isBuffCentricClass: false,
-        triggerName: '',
-        windows: [],
-        skillBreakdown: new Map()
-      };
-    }
-
-    const windowSec = customWindowSec || this.burstWindowSeconds || 30;
-    const rawOmegaBase = Number(this.omegaBaseInput?.value) || 1.75;
-    const rawOmegaBuff = Number(this.omegaBuffClassInput?.value) || 2.75;
-
-    const cacheKey = `${rec.replayId}_${customTriggerName}_${windowSec}_${rawOmegaBase}_${rawOmegaBuff}`;
-    if (rec._burstCacheKey === cacheKey && rec._burstCacheResult) {
-      return rec._burstCacheResult;
-    }
-
-    const skills = rec.skills;
-    const timelines = Array.isArray(rec.timeline) ? rec.timeline : [];
-    const { timelineCountMap } = this.classifySkillsOfRecord(rec);
-
-    let triggerName = customTriggerName;
-    if (!triggerName || !timelineCountMap.has(triggerName)) {
-      for (const sName of timelineCountMap.keys()) {
-        if (sName.includes('리스트레인트')) { triggerName = sName; break; }
-      }
-    }
-    if (!triggerName || !timelineCountMap.has(triggerName)) {
-      for (const sName of timelineCountMap.keys()) {
-        if (SEEDRING_KEYWORDS.some(kw => sName.includes(kw))) { triggerName = sName; break; }
-      }
-    }
-    if (!triggerName || !timelineCountMap.has(triggerName)) {
-      for (const sName of timelineCountMap.keys()) {
-        if (KNOWN_BUFF_KEYWORDS.some(kw => sName.includes(kw))) { triggerName = sName; break; }
-      }
-    }
-
-    const preBufferMs = 3000;
-    const windowMs = windowSec * 1000;
-    const distinctWindows = [];
-
-    if (triggerName && timelineCountMap.has(triggerName)) {
-      const rawTimes = timelines
-        .filter(t => t && t.skill_name === triggerName)
-        .map(t => Number(t.elapse_time) || 0)
-        .sort((a, b) => a - b);
-
-      const debounceMs = Math.max(15000, Math.floor(windowMs * 0.8));
-      const triggerTimes = [];
-      rawTimes.forEach(ms => {
-        if (triggerTimes.length === 0 || ms - triggerTimes[triggerTimes.length - 1] > debounceMs) {
-          triggerTimes.push(ms);
-        }
-      });
-
-      triggerTimes.forEach((tMs, idx) => {
-        let startMs = Math.max(0, tMs - preBufferMs);
-        let endMs = startMs + windowMs;
-        if (endMs > 360000) {
-          endMs = 360000;
-          startMs = Math.max(0, endMs - windowMs);
-        }
-        distinctWindows.push({
-          round: String(idx + 1),
-          triggerMs: tMs,
-          startMs,
-          endMs,
-          startSecStr: (startMs / 1000).toFixed(1),
-          endSecStr: (endMs / 1000).toFixed(1)
-        });
-      });
-    }
-
-    if (distinctWindows.length === 0) {
-      [0, 120000, 240000].forEach((startMs, idx) => {
-        distinctWindows.push({
-          round: String(idx + 1),
-          triggerMs: startMs,
-          startMs,
-          endMs: startMs + windowMs,
-          startSecStr: (startMs / 1000).toFixed(1),
-          endSecStr: ((startMs + windowMs) / 1000).toFixed(1)
-        });
-      });
-    }
-
-    const count30Map = new Map();
-    const count90Map = new Map();
-
-    for (let i = 0; i < timelines.length; i++) {
-      const t = timelines[i];
-      if (!t || !t.skill_name) continue;
-      const ms = Number(t.elapse_time) || 0;
-      let inBurst = false;
-      for (let j = 0; j < distinctWindows.length; j++) {
-        if (ms >= distinctWindows[j].startMs && ms <= distinctWindows[j].endMs) {
-          inBurst = true;
-          break;
-        }
-      }
-      if (inBurst) count30Map.set(t.skill_name, (count30Map.get(t.skill_name) || 0) + 1);
-      else count90Map.set(t.skill_name, (count90Map.get(t.skill_name) || 0) + 1);
-    }
-
-    let pureActiveBurstSum = 0;
-    skills.forEach(s => {
-      if (!s || !s.name) return;
-      const D_i = Number(s.rate) || 0;
-      if (D_i <= 0) return;
-      const cat = this.getSkillCategory(s.name, rec);
-      if (cat === '소환' || cat === '설치') return;
-
-      const n30 = count30Map.get(s.name) || 0;
-      const n90 = count90Map.get(s.name) || 0;
-      const nTotal = n30 + n90;
-      if (nTotal > 0 && (n30 / nTotal) >= 0.85) {
-        pureActiveBurstSum += D_i;
-      }
-    });
-    pureActiveBurstSum = Number(pureActiveBurstSum.toFixed(1));
-    const isBuffCentricClass = pureActiveBurstSum < 25.0;
-
-    const skillBreakdown = new Map();
-    let totalBurstShare = 0;
-    const sustainedSec = Math.max(10, 120 - windowSec);
-
-    skills.forEach(s => {
-      if (!s || !s.name) return;
-      const D_i = Number(s.rate) || 0;
-      const n30 = count30Map.get(s.name) || 0;
-      const n90 = count90Map.get(s.name) || 0;
-      const nTotal = n30 + n90;
-      const cat = this.getSkillCategory(s.name, rec);
-
-      let omega = rawOmegaBase;
-      let formulaType = 'active';
-      let D_i_30 = 0;
-
-      if (nTotal === 0 || cat === '소환' || cat === '설치') {
-        formulaType = 'passive_time';
-        omega = isBuffCentricClass ? rawOmegaBuff : rawOmegaBase;
-        D_i_30 = D_i * ((windowSec * omega) / ((windowSec * omega) + sustainedSec));
-      } else {
-        const isMainContinuousAttack = (n90 / nTotal) >= 0.35;
-        omega = (isBuffCentricClass && isMainContinuousAttack) ? rawOmegaBuff : rawOmegaBase;
-        D_i_30 = D_i * ((n30 * omega) / ((n30 * omega) + n90));
-      }
-
-      D_i_30 = Number(D_i_30.toFixed(2));
-      totalBurstShare += D_i_30;
-
-      skillBreakdown.set(s.name, {
-        name: s.name,
-        D_i,
-        n30,
-        n90,
-        omega,
-        formulaType,
-        D_i_30
-      });
-    });
-
-    totalBurstShare = Math.min(100, Number(totalBurstShare.toFixed(1)));
-
-    const resultObj = {
-      totalBurstShare,
-      pureActiveBurstSum,
-      isBuffCentricClass,
-      triggerName: triggerName || '120초 기본주기',
-      windows: distinctWindows,
-      skillBreakdown
-    };
-
-    rec._burstCacheKey = cacheKey;
-    rec._burstCacheResult = resultObj;
-    return resultObj;
-  }
-
-  computeSelectedSkillsBurstMetrics(jobName) {
-    const canonical = Utils.getCanonicalJobName(jobName);
-    const allRecs = Array.from(this.recordsDb.values());
-    const jobRecs = canonical
-      ? allRecs.filter(r => Utils.isSameJob(r.job, canonical))
-      : (this.currentSelectedRecord ? [this.currentSelectedRecord] : []);
-
-    const selectedArr = Array.from(this.selectedSkills);
-
-    if (jobRecs.length === 0) {
-      return {
-        formulaBurstAll: 0,
-        formulaBurstSelected: 0,
-        firstBucketRate: 0,
-        totalDamageShare: 0,
-        activeRate: this.customBurstRateInputVal !== null ? Number(this.customBurstRateInputVal) : 0
-      };
-    }
-
-    let sumFormulaAll = 0;
-    let sumFormulaSelected = 0;
-    let validFormulaCnt = 0;
-
-    jobRecs.forEach(r => {
-      const res = this.evaluateBurstAttributionFormula(r);
-      if (res.skillBreakdown.size > 0) {
-        validFormulaCnt++;
-        sumFormulaAll += res.totalBurstShare;
-        if (selectedArr.length > 0) {
-          let selSum = 0;
-          selectedArr.forEach(sName => {
-            const item = res.skillBreakdown.get(sName);
-            if (item) selSum += item.D_i_30;
-          });
-          sumFormulaSelected += selSum;
-        } else {
-          sumFormulaSelected += res.totalBurstShare;
-        }
-      }
-    });
-
-    const formulaBurstAll = validFormulaCnt > 0 ? Number((sumFormulaAll / validFormulaCnt).toFixed(1)) : 0;
-    const formulaBurstSelected = validFormulaCnt > 0 ? Number((sumFormulaSelected / validFormulaCnt).toFixed(1)) : 0;
-
-    const skillRateMap = new Map();
-    jobRecs.forEach(r => {
-      (r.skills || []).forEach(s => {
-        if (!s || !s.name) return;
-        if (!skillRateMap.has(s.name)) skillRateMap.set(s.name, { sumRate: 0, cnt: 0 });
-        const o = skillRateMap.get(s.name);
-        o.sumRate += Number(s.rate) || 0;
-        o.cnt += 1;
-      });
-    });
-
-    let totalDamageShare = 0;
-    selectedArr.forEach(sName => {
-      const o = skillRateMap.get(sName);
-      if (o && o.cnt > 0) totalDamageShare += (o.sumRate / o.cnt);
-    });
-    totalDamageShare = Number(totalDamageShare.toFixed(1));
-
-    const intervalMs = (this.top20TimelineInterval || 30) * 1000;
-    let firstBucketTotal = 0, firstBucketSelected = 0;
-    jobRecs.forEach(r => {
-      (r.timeline || []).forEach(t => {
-        if (!t) return;
-        const ms = Number(t.elapse_time) || 0;
-        if (ms >= 0 && ms < intervalMs) {
-          firstBucketTotal += 1;
-          if (this.selectedSkills.has(t.skill_name)) firstBucketSelected += 1;
-        }
-      });
-    });
-    const firstBucketRate = firstBucketTotal > 0 ? Number(((firstBucketSelected / firstBucketTotal) * 100).toFixed(1)) : 0;
-
-    let activeRate = formulaBurstSelected;
-    if (this.customBurstRateInputVal !== null) {
-      activeRate = Number(this.customBurstRateInputVal);
-    } else if (this.burstRateCalcMode === 'formulaBurst') {
-      activeRate = selectedArr.length > 0 ? formulaBurstSelected : formulaBurstAll;
-    } else if (this.burstRateCalcMode === 'firstBucket') {
-      activeRate = firstBucketRate;
-    } else if (this.burstRateCalcMode === 'totalShare') {
-      activeRate = totalDamageShare;
-    }
-
-    return {
-      formulaBurstAll,
-      formulaBurstSelected,
-      firstBucketRate,
-      totalDamageShare,
-      activeRate: Number((Number(activeRate) || 0).toFixed(1))
-    };
-  }
-
-  renderBurstSkillSaveBanners() {
-    const activeJob = this.getCurrentActiveJobName();
-    const selectedArr = Array.from(this.selectedSkills);
-    const savedProfile = activeJob ? this.savedJobBurstProfiles[activeJob] : null;
-    const metrics = this.computeSelectedSkillsBurstMetrics(activeJob);
-
-    const displayRate = metrics.activeRate;
-    const activeCutoff = Number(this.burstCutoffInput?.value) || 50.0;
-    const isBurstRole = displayRate >= activeCutoff;
-
-    const skillTagsHtml = selectedArr.length > 0
-      ? selectedArr.map(sName => `<span class="saved-skill-tag">${sName}</span>`).join('')
-      : `<span style="color:#a0aec0;">미선택 시 전체 30초 극딜 합계(${metrics.formulaBurstAll}%)가 적용되며, 특정 스킬들을 클릭해 선택하면 선택 스킬 합산치로 저장할 수 있습니다.</span>`;
-
-    const savedStatusBadge = savedProfile
-      ? `<span style="background:#2f855a; color:#fff; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold;">💾 ${activeJob} 저장됨 (${savedProfile.burstRate}%)</span>`
-      : `<span style="background:#2d3748; color:#cbd5e0; padding:2px 6px; border-radius:4px; font-size:10px;">자동 공식 적용 중</span>`;
-
-    const buildBannerHtml = (prefixId) => `
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;">
-        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <strong style="color: #fff; font-size: 12px;">
-            🎯 스킬 선택 (<span style="color: #63b3ed;">${selectedArr.length}개</span>)
-          </strong>
-          <div style="display: inline-flex; align-items: center; gap: 4px; background: #141821; border: 1px solid #f6ad55; padding: 2px 8px; border-radius: 6px;">
-            <strong style="color: #fbd38d; font-size: 12px;">[극딜 딜량</strong>
-            <input type="number" class="sync-burst-rate-input" id="${prefixId}_rateInput" value="${displayRate}" step="0.1" min="0" max="100" style="width: 54px; text-align: right; font-weight: bold; font-size: 12px; color: #fbd38d; background: transparent; border: none; border-bottom: 1px dashed #f6ad55;" />
-            <strong style="color: #fbd38d; font-size: 12px;">%]</strong>
-          </div>
-          <span style="font-size: 11px; font-weight: bold; color: ${isBurstRole ? '#fc8181' : '#63b3ed'};">
-            ${isBurstRole ? `🔥극딜(≥${activeCutoff}%)` : `🔄평딜(&lt;${activeCutoff}%)`}
-          </span>
-          ${savedStatusBadge}
-        </div>
-
-        <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
-          <button type="button" class="burst-metric-chip ${this.burstRateCalcMode === 'formulaBurst' && this.customBurstRateInputVal === null ? 'active-chip' : ''}" data-mode="formulaBurst" title="30초 극딜 구간(-3초~+27초) 귀속 딜량 합산">
-            30초극딜귀속(${selectedArr.length > 0 ? metrics.formulaBurstSelected : metrics.formulaBurstAll}%)
-          </button>
-          <button type="button" class="burst-metric-chip ${this.burstRateCalcMode === 'firstBucket' && this.customBurstRateInputVal === null ? 'active-chip' : ''}" data-mode="firstBucket" title="타임라인 첫 구간(0~30초) 선택 스킬 시전 비율">
-            0~30초시전(${metrics.firstBucketRate}%)
-          </button>
-          <button type="button" class="burst-metric-chip ${this.burstRateCalcMode === 'totalShare' && this.customBurstRateInputVal === null ? 'active-chip' : ''}" data-mode="totalShare" title="선택 스킬들의 전체 딜 점유율 단순 합산">
-            전체점유합(${metrics.totalDamageShare}%)
-          </button>
-          <button type="button" class="btn-primary save-job-burst-btn" style="padding: 4px 10px; font-size: 11px; font-weight: bold;">
-            💾 ${activeJob || '현재 직업'} 극딜 저장
-          </button>
-          ${savedProfile ? `<button type="button" class="btn-sub delete-job-burst-btn" style="padding: 4px 7px; font-size: 10px; color: #feb2b2;">초기화</button>` : ''}
-        </div>
-      </div>
-
-      <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 5px; line-height: 1.5;">
-        <span style="color: #cbd5e0; font-weight: bold; margin-right: 6px;">📋 사용한 스킬 목록 (${selectedArr.length}개):</span>
-        ${skillTagsHtml}
-      </div>
-    `;
-
-    const bindBannerEvents = (container) => {
-      if (!container) return;
-
-      const rateInp = container.querySelector('.sync-burst-rate-input');
-      if (rateInp) {
-        rateInp.addEventListener('input', (e) => {
-          this.customBurstRateInputVal = Number(e.target.value) || 0;
-          document.querySelectorAll('.sync-burst-rate-input').forEach(other => {
-            if (other !== e.target) other.value = e.target.value;
-          });
-        });
-      }
-
-      container.querySelectorAll('.burst-metric-chip').forEach(chip => {
-        chip.addEventListener('click', () => {
-          this.burstRateCalcMode = chip.dataset.mode;
-          this.customBurstRateInputVal = null;
-          this.renderBurstSkillSaveBanners();
-        });
-      });
-
-      const saveBtn = container.querySelector('.save-job-burst-btn');
-      if (saveBtn) {
-        saveBtn.addEventListener('click', async () => {
-          const targetJob = this.getCurrentActiveJobName();
-          if (!targetJob) {
-            return this.setStatus('먼저 저장할 직업을 상단 [직업 선택]에서 고르거나 캐릭터를 클릭해주세요!', true);
-          }
-          const currentInput = container.querySelector('.sync-burst-rate-input');
-          const finalRate = currentInput ? Number(Number(currentInput.value).toFixed(1)) : displayRate;
-          const skillsArray = Array.from(this.selectedSkills);
-
-          this.savedJobBurstProfiles[targetJob] = {
-            job: targetJob,
-            burstRate: finalRate,
-            skills: skillsArray,
-            metricMode: this.burstRateCalcMode,
-            updatedAt: new Date().toISOString()
-          };
-
-          if (targetJob === (this.baselineJobSelect?.value || '')) {
-            this.isManualCutoffOverride = false;
-          }
-
-          await this.saveRecordsToDisk();
-          this.updateJobBurstRoleClassifier();
-          this.updateChuchuRankTable();
-          this.renderFilteredCharacters();
-          this.renderBurstSkillSaveBanners();
-
-          this.setStatus(`💾 [${targetJob}] 극딜 지표 저장 완료! — 스킬 선택 (${skillsArray.length}개) [극딜 딜량 ${finalRate}%]`);
-        });
-      }
-
-      const delBtn = container.querySelector('.delete-job-burst-btn');
-      if (delBtn) {
-        delBtn.addEventListener('click', async () => {
-          const targetJob = this.getCurrentActiveJobName();
-          if (!targetJob || !this.savedJobBurstProfiles[targetJob]) return;
-          delete this.savedJobBurstProfiles[targetJob];
-          this.customBurstRateInputVal = null;
-          await this.saveRecordsToDisk();
-          this.updateJobBurstRoleClassifier();
-          this.updateChuchuRankTable();
-          this.renderFilteredCharacters();
-          this.renderBurstSkillSaveBanners();
-          this.setStatus(`[${targetJob}]의 저장된 극딜 지표가 자동 공식 모드로 초기화되었습니다.`);
-        });
-      }
-    };
-
-    if (this.extBurstSkillSaveLine) {
-      this.extBurstSkillSaveLine.innerHTML = buildBannerHtml('ext');
-      bindBannerEvents(this.extBurstSkillSaveLine);
-    }
-    if (this.top20BurstSaveBanner) {
-      this.top20BurstSaveBanner.innerHTML = buildBannerHtml('top20');
-      bindBannerEvents(this.top20BurstSaveBanner);
-    }
-  }
-
-  updateJobBurstRoleClassifier() {
-    if (!this.burstJobsContainer || !this.sustainedJobsContainer || !this.unclassifiedJobsContainer) return;
-
-    const allRecs = Array.from(this.recordsDb.values());
-    const myOwnedJobs = new Set();
-    (this.filteredCharacters || []).forEach(ch => {
-      if (ch.character_class) {
-        myOwnedJobs.add(ch.character_class);
-        (JOB_NAME_ALIASES[ch.character_class] || []).forEach(a => myOwnedJobs.add(a));
-      }
-    });
-
-    const jobSet = new Set(MASTER_JOB_LIST);
-    allRecs.forEach(r => {
-      if (r && r.job && !JOB_NAME_ALIASES[r.job]) jobSet.add(r.job);
-    });
-
-    this.jobBurstStatsCache.clear();
-
-    for (const jobName of jobSet) {
-      const canonical = Utils.getCanonicalJobName(jobName);
-      const savedProfile = this.savedJobBurstProfiles[canonical];
-      const jobRecs = allRecs.filter(r => r && Utils.isSameJob(r.job, jobName));
-
-      let finalBurstRate = null;
-      let isManualSaved = false;
-      let isBuffCentric = false;
-      let pureBurstSum = 0;
-      let savedSkills = [];
-
-      if (savedProfile && typeof savedProfile.burstRate === 'number') {
-        finalBurstRate = savedProfile.burstRate;
-        isManualSaved = true;
-        savedSkills = savedProfile.skills || [];
-      } else if (jobRecs.length > 0) {
-        const rates = [];
-        let buffCentricVotes = 0;
-        let pSum = 0;
-        jobRecs.forEach(r => {
-          const evalRes = this.evaluateBurstAttributionFormula(r);
-          if (evalRes.totalBurstShare > 0) {
-            rates.push(evalRes.totalBurstShare);
-            pSum += evalRes.pureActiveBurstSum;
-            if (evalRes.isBuffCentricClass) buffCentricVotes++;
-          }
-        });
-        if (rates.length > 0) {
-          finalBurstRate = Number((rates.reduce((a, b) => a + b, 0) / rates.length).toFixed(1));
-          isBuffCentric = buffCentricVotes >= Math.ceil(rates.length / 2);
-          pureBurstSum = Number((pSum / rates.length).toFixed(1));
-        }
-      }
-
-      this.jobBurstStatsCache.set(jobName, {
-        job: jobName,
-        recordCount: jobRecs.length,
-        avgBurstRate: finalBurstRate,
-        isManualSaved,
-        isBuffCentric,
-        pureBurstSum,
-        savedSkills,
-        isOwned: myOwnedJobs.has(jobName)
-      });
-    }
-
-    const baseMode = this.baselineJobSelect ? this.baselineJobSelect.value : 'FIXED_50';
-    let activeCutoff = Number(this.burstCutoffInput?.value) || 50.0;
-
-    if (baseMode === 'FIXED_50' && !this.isManualCutoffOverride) {
-      activeCutoff = 50.0;
-      if (this.burstCutoffInput) this.burstCutoffInput.value = 50.0;
-    } else if (baseMode !== 'FIXED_50') {
-      const baseJobStat = this.jobBurstStatsCache.get(baseMode);
-      if (baseJobStat && baseJobStat.avgBurstRate !== null && !this.isManualCutoffOverride) {
-        activeCutoff = baseJobStat.avgBurstRate;
-        if (this.burstCutoffInput) this.burstCutoffInput.value = activeCutoff;
-      }
-    }
-
-    if (this.burstBaselineStatusText) {
-      const omegaB = Number(this.omegaBaseInput?.value) || 1.75;
-      const omegaC = Number(this.omegaBuffClassInput?.value) || 2.75;
-      this.burstBaselineStatusText.innerHTML =
-        `극딜 30초(-3~+27초) | 기본배율=${omegaB}, 버프형배율=${omegaC} | 판정선: <strong>${activeCutoff}%</strong>`;
-    }
-
-    const onlyMyJobs = Boolean(this.filterOnlyMyAccountJobsChk?.checked);
-    const burstJobs = [], sustainedJobs = [], unclassifiedJobs = [];
-
-    for (const stat of this.jobBurstStatsCache.values()) {
-      if (onlyMyJobs && !stat.isOwned) continue;
-      if (stat.avgBurstRate === null) unclassifiedJobs.push(stat);
-      else if (stat.avgBurstRate >= activeCutoff) burstJobs.push(stat);
-      else sustainedJobs.push(stat);
-    }
-
-    burstJobs.sort((a, b) => b.avgBurstRate - a.avgBurstRate);
-    sustainedJobs.sort((a, b) => b.avgBurstRate - a.avgBurstRate);
-    unclassifiedJobs.sort((a, b) => (b.isOwned ? 1 : 0) - (a.isOwned ? 1 : 0) || a.job.localeCompare(b.job));
-
-    if (this.burstJobCountBadge) this.burstJobCountBadge.textContent = `${burstJobs.length}개 직업`;
-    if (this.sustainedJobCountBadge) this.sustainedJobCountBadge.textContent = `${sustainedJobs.length}개 직업`;
-    if (this.unclassifiedJobCountBadge) this.unclassifiedJobCountBadge.textContent = `${unclassifiedJobs.length}개 직업`;
-
-    const renderPills = (arr, isUnclassified = false) => {
-      if (arr.length === 0) return `<div class="empty-msg" style="padding: 4px; font-size: 11px;">해당 직업 없음</div>`;
-      return arr.map(item => {
-        const classes = ['job-role-pill', item.isOwned ? 'owned-job-pill' : ''].filter(Boolean).join(' ');
-        const savedIcon = item.isManualSaved ? `<span title="수동 저장됨">💾</span>` : (item.isBuffCentric ? `<span title="버프형 5차 주력기 상향 배율 자동 적용됨">⚡</span>` : '');
-        const rateText = isUnclassified
-          ? `<span style="color:#718096; font-size:10px;">미수집</span>`
-          : `<span style="color:${item.avgBurstRate >= activeCutoff ? '#feb2b2' : '#90cdf4'}; font-weight:bold;">${item.avgBurstRate}%</span>`;
-        const ownedBadge = item.isOwned ? `<span style="color:#68d391; font-size:9px;">★보유</span>` : '';
-
-        const tooltipText = item.isManualSaved
-          ? `[${item.job}] 수동 저장된 극딜 비중: ${item.avgBurstRate}%\n선택 스킬(${item.savedSkills.length}개): ${item.savedSkills.join(', ')}`
-          : `[${item.job}] 30초 극딜 귀속 비중: ${item.avgBurstRate ?? '-'}%\n순수 액티브 극딜기 합: ${item.pureBurstSum}% (${item.isBuffCentric ? '버프형 5차 주력기 상향 배율 적용' : '기본 배율 적용'})`;
-
-        return `
-          <div class="${classes}" data-role-job="${item.job}" title="${tooltipText.replace(/"/g, '&quot;')}">
-            ${savedIcon}
-            <span>${item.job}</span>
-            ${rateText}
-            ${ownedBadge}
-          </div>
-        `;
-      }).join('');
-    };
-
-    this.burstJobsContainer.innerHTML = renderPills(burstJobs, false);
-    this.sustainedJobsContainer.innerHTML = renderPills(sustainedJobs, false);
-    this.unclassifiedJobsContainer.innerHTML = renderPills(unclassifiedJobs, true);
-
-    [this.burstJobsContainer, this.sustainedJobsContainer, this.unclassifiedJobsContainer].forEach(container => {
-      container.querySelectorAll('.job-role-pill').forEach(pill => {
-        pill.addEventListener('click', () => {
-          this.selectJobFromLeftPanel(pill.dataset.roleJob, true);
-        });
-      });
-    });
-  }
-
-  async loadAccountCharacterHexaToQ3(charName, charJob, charLv) {
-    this.selectJobFromLeftPanel(charJob, false);
-
-    if (charLv < 260) {
-      if (this.calcQ3Input) this.calcQ3Input.value = 0;
-      this.recalculateDamageEstimator();
-      this.setStatus(`'${charName}' (${charJob} Lv.${charLv}) 선택됨 — 260Lv 미만으로 6차 조각 0개 적용`);
-      return;
-    }
-
-    if (!this.ensureApi()) return;
-
-    try {
-      this.setStatus(`'${charName}' (${charJob} Lv.${charLv})의 6차 조각 사용량 및 전투력 불러오는 중...`);
-      const { ocid } = await this.api.getOcid(charName);
-      const [hexaData, statData] = await Promise.all([
-        this.api.getCharacterHexaMatrix(ocid).catch(() => null),
-        this.api.getCharacterStat(ocid).catch(() => null)
-      ]);
-
-      const { combatFragments, summaryText } = Utils.calculateHexaFragmentsFromApi(hexaData);
-      let myCombatPower = 0;
-      const cpObj = (statData?.final_stat || []).find(s => s.stat_name === '전투력');
-      if (cpObj) myCombatPower = Number(cpObj.stat_value) || 0;
-
-      if (this.calcQ3Input) this.calcQ3Input.value = combatFragments;
-      if (myCombatPower > 0 && this.calcCharCpManInput) {
-        this.calcCharCpManInput.value = Math.round(myCombatPower / 10000);
-      }
-
-      this.recalculateDamageEstimator();
-      if (this.calcBpSyncInfo) {
-        const cpStr = myCombatPower > 0 ? Utils.formatKoreanNumber(myCombatPower) : '미확인';
-        this.calcBpSyncInfo.innerHTML =
-          `👤 <strong>내 캐릭터 [${charName} (${charJob} Lv.${charLv})] 조각 & 전투력 반영 완료!</strong><br/>` +
-          `입장 전투력: <strong style="color:#63b3ed;">${cpStr}</strong> | 보스 유효 조각: <strong style="color:#fbd38d;">${combatFragments.toLocaleString()}개</strong> (${summaryText})`;
-      }
-
-      this.setStatus(`'${charName}' 에르다 조각 사용량 반영 완료! (${combatFragments.toLocaleString()}개)`);
-    } catch (err) {
-      this.setStatus(`'${charName}' 조각 조회 실패: ${err.message}`, true);
-    }
-  }
-
-  selectJobFromLeftPanel(rawJobName, overwriteCalcWithRanker = true) {
-    if (!rawJobName) return;
-
-    const allRecs = Array.from(this.recordsDb.values());
-    const matchedRecords = allRecs.filter(r => r && Utils.isSameJob(r.job, rawJobName));
-    const dbJobName = matchedRecords.length > 0 ? matchedRecords[0].job : rawJobName;
-
-    const restored = this.restoreSavedBurstSkillsForJob(dbJobName);
-    if (!restored) this.selectedSkills.clear();
-
-    if (this.rankJobFilter) {
-      const hasOption = Array.from(this.rankJobFilter.options).some(opt => opt.value === dbJobName);
-      if (!hasOption) {
-        const tempOpt = document.createElement('option');
-        tempOpt.value = dbJobName;
-        tempOpt.textContent = `${dbJobName} (기록 0건)`;
-        this.rankJobFilter.appendChild(tempOpt);
-      }
-      this.rankJobFilter.value = dbJobName;
-    }
-
-    this.updateChuchuRankTable();
-    this.updateAllRecordsTable();
-    this.updateTop20SkillsTable();
-
-    const calcAliases = JOB_NAME_ALIASES[rawJobName] || [rawJobName];
-    const matchedCalcJob = calcAliases.find(name => HEXA_FRAGMENT_TABLE[name]) || rawJobName;
-    if (this.calcJobPresetSelect && HEXA_FRAGMENT_TABLE[matchedCalcJob]) {
-      this.calcJobPresetSelect.value = matchedCalcJob;
-      this.syncCalculatorWithJobAndBp(matchedCalcJob);
-    }
-
-    if (matchedRecords.length > 0) {
-      matchedRecords.sort((a, b) => b.dps - a.dps);
-      const bestRecord = matchedRecords[0];
-      this.currentSelectedRecord = bestRecord;
-
-      if (this.cardCharJob) this.cardCharJob.textContent = `${bestRecord.charName} (${bestRecord.job} Lv.${bestRecord.level})`;
-      if (this.cardDps) this.cardDps.textContent = Utils.formatKoreanNumber(bestRecord.dps);
-      if (this.cardCombatPower) this.cardCombatPower.textContent = bestRecord.combatPower > 0 ? Utils.formatKoreanNumber(bestRecord.combatPower) : '-';
-      if (this.cardEfficiency) this.cardEfficiency.textContent = bestRecord.efficiency > 0 ? bestRecord.efficiency.toLocaleString() : '-';
-      if (this.detailRecordDateInfo) {
-        const sName = this.seasonsDb.get(this.currentSeasonKey)?.name || '';
-        this.detailRecordDateInfo.textContent = `${sName} | 기록일: ${Utils.formatShortDate(bestRecord.recordDate || bestRecord.collectedAt)}`;
-      }
-
-      if (overwriteCalcWithRanker) {
-        if (bestRecord.combatPower > 0 && this.calcCharCpManInput) {
-          this.calcCharCpManInput.value = Math.round(bestRecord.combatPower / 10000);
-        }
-        if (bestRecord.usedFragments > 0 && this.calcQ3Input) {
-          this.calcQ3Input.value = bestRecord.usedFragments;
-        }
-      }
-
-      this.renderDetailSkillsTable(bestRecord);
-      this.buildTimelineSkillCheckboxes(bestRecord);
-      this.renderTimelineSection(bestRecord);
-      this.setupRightExtensionPanel(bestRecord);
-      this.recalculateDamageEstimator();
-      this.renderBurstSkillSaveBanners();
-    } else {
-      this.renderBurstSkillSaveBanners();
-    }
-  }
-
-  getJobBattlePracticeStats(jobName) {
-    const allRecs = Array.from(this.recordsDb.values());
-    const matched = allRecs.filter(r => r && Utils.isSameJob(r.job, jobName) && r.efficiency > 0);
-    if (matched.length === 0) return { count: 0, avgEff: 0, avgDps: 0, avgCp: 0 };
-    const sumEff = matched.reduce((acc, cur) => acc + (cur.efficiency || 0), 0);
-    const sumDps = matched.reduce((acc, cur) => acc + (cur.dps || 0), 0);
-    const sumCp = matched.reduce((acc, cur) => acc + (cur.combatPower || 0), 0);
-    const cnt = matched.length;
-    const avgDps = Math.round(sumDps / cnt);
-    const avgCp = Math.round(sumCp / cnt);
-    const avgEff = avgCp > 0 ? Math.round(avgDps / avgCp) : Math.round(sumEff / cnt);
-    return { count: cnt, avgEff, avgDps, avgCp };
+  // 오직 8대 연계 직업(카데나, 블래스터, 칼리, 에반, 제로, 메르세데스, 아크, 스트라이커)만 true 반환
+  isComboJob(jobInfo) {
+    if (!jobInfo) return false;
+    const jName = typeof jobInfo === 'string' ? jobInfo : jobInfo.job;
+    return Boolean(STRICT_COMBO_JOBS_DB[jName]);
   }
 
   getInterpolatedHexaRate(jobName, fragCount) {
-    const aliases = JOB_NAME_ALIASES[jobName] || [jobName];
-    const matchedKey = aliases.find(k => HEXA_FRAGMENT_TABLE[k]) || '히어로';
-    const tiers = HEXA_FRAGMENT_TABLE[matchedKey];
+    const tiers = HEXA_FRAGMENT_TABLE[jobName] || HEXA_FRAGMENT_TABLE['히어로'];
     const [t2k, t5k, t10k, t20k, t40k] = tiers;
-
     const slopeEarly = (t5k[0] - t2k[0]) / Math.max(1, (t5k[1] - t2k[1]));
     const rateAtZero = Math.max(52, Number((t2k[0] - slopeEarly * t2k[1]).toFixed(2)));
 
@@ -1199,1811 +629,1864 @@ class MapleDashboardApp {
     ];
 
     const q = Math.max(0, Number(fragCount) || 0);
-    if (q <= 0) return { currentRate: rateAtZero, zeroRate: rateAtZero, tiers };
-    if (q >= 44000) return { currentRate: 100.0, zeroRate: rateAtZero, tiers };
+    if (q <= 0) return rateAtZero;
+    if (q >= 44000) return 100.0;
 
     for (let i = 0; i < points.length - 1; i++) {
       const p1 = points[i], p2 = points[i + 1];
       if (q >= p1.frag && q <= p2.frag) {
         const ratio = (q - p1.frag) / Math.max(1, (p2.frag - p1.frag));
+        return Number((p1.rate + ratio * (p2.rate - p1.rate)).toFixed(2));
+      }
+    }
+    return t40k[0];
+  }
+
+  // 질문 1 ~ 질문 7 분기 트리 경로 추적기
+  traceDecisionTreePath() {
+    const visitedSteps = [];
+    let currentId = 'Q1';
+    let guard = 0;
+
+    while (currentId && DECISION_TREE_NODES[currentId] && guard < 10) {
+      guard++;
+      const node = DECISION_TREE_NODES[currentId];
+      const ans = this.treeAnswers[currentId] || 'YES';
+      const nextTarget = ans === 'YES' ? node.yesNext : node.noNext;
+
+      visitedSteps.push({
+        nodeId: currentId,
+        stepNum: node.stepNum,
+        question: node.question,
+        subtitle: node.subtitle,
+        answer: ans,
+        answerText: ans === 'YES' ? '예' : '아니오',
+        chosenDesc: ans === 'YES' ? node.yesDesc : node.noDesc,
+        nextTarget
+      });
+
+      if (nextTarget.startsWith('RESULT_')) {
         return {
-          currentRate: Number((p1.rate + ratio * (p2.rate - p1.rate)).toFixed(2)),
-          zeroRate: rateAtZero,
-          tiers
+          visitedSteps,
+          terminalRule: nextTarget,
+          reachedViaQ5Burst: visitedSteps.some(s => s.nodeId === 'Q5' && s.answer === 'YES'),
+          reachedViaQ3Easy: visitedSteps.some(s => s.nodeId === 'Q3' && s.answer === 'YES')
         };
       }
-    }
-    return { currentRate: t40k[0], zeroRate: rateAtZero, tiers };
-  }
-
-  initDamageCalculatorPresets() {
-    if (!this.calcJobPresetSelect) return;
-    const jobNames = Object.keys(HEXA_FRAGMENT_TABLE);
-    this.calcJobPresetSelect.innerHTML = jobNames.map(jName => {
-      const bpStats = this.getJobBattlePracticeStats(jName);
-      const bpTag = bpStats.count > 0 ? ` [연무장 ${bpStats.count}건: 효율 ${bpStats.avgEff.toLocaleString()}]` : '';
-      return `<option value="${jName}">${jName}${bpTag}</option>`;
-    }).join('');
-
-    const defaultJob = this.currentSelectedRecord?.job && HEXA_FRAGMENT_TABLE[this.currentSelectedRecord.job]
-      ? this.currentSelectedRecord.job
-      : '히어로';
-
-    this.calcJobPresetSelect.value = defaultJob;
-    this.syncCalculatorWithJobAndBp(defaultJob);
-  }
-
-  applyHeroMainCalibration() {
-    if (this.calcJobPresetSelect) this.calcJobPresetSelect.value = '히어로';
-    if (this.calcFullPInput) this.calcFullPInput.value = HERO_CALIBRATED_FULL_INDEX;
-    const { zeroRate } = this.getInterpolatedHexaRate('히어로', 0);
-    if (this.calcBasePInput) this.calcBasePInput.value = Number((HERO_CALIBRATED_FULL_INDEX * (zeroRate / 100)).toFixed(1));
-    if (this.calcQ3Input) this.calcQ3Input.value = 5656;
-    if (this.calcCharCpManInput) this.calcCharCpManInput.value = 10650;
-    if (this.calcForceMultInput) this.calcForceMultInput.value = 132;
-    if (this.calcBossHpJoInput) this.calcBossHpJoInput.value = 779;
-    if (this.calcRealFactorInput) this.calcRealFactorInput.value = 0.70;
-
-    this.syncCalculatorWithJobAndBp('히어로', true);
-    this.setStatus('본캐 히어로(1억 650만 / 조각 5,656개 / 포스 132% / 779조 18분 클리어) 역산 기준점이 적용되었습니다!');
-  }
-
-  syncCalculatorWithJobAndBp(jobName, keepManualFullP = false) {
-    const bpStats = this.getJobBattlePracticeStats(jobName);
-    const { zeroRate, tiers } = this.getInterpolatedHexaRate(jobName, 0);
-
-    let fullIndexP = HERO_CALIBRATED_FULL_INDEX;
-    if (!keepManualFullP) {
-      if (jobName === '히어로') {
-        fullIndexP = HERO_CALIBRATED_FULL_INDEX;
-      } else if (bpStats.count > 0 && bpStats.avgEff > 0) {
-        const heroStats = this.getJobBattlePracticeStats('히어로');
-        if (heroStats.count > 0 && heroStats.avgEff > 0) {
-          fullIndexP = Number((HERO_CALIBRATED_FULL_INDEX * (bpStats.avgEff / heroStats.avgEff)).toFixed(1));
-        } else {
-          fullIndexP = Number((bpStats.avgEff / BP_EFF_TO_INDEX_DIVISOR).toFixed(1));
-        }
-      }
-      if (this.calcFullPInput) this.calcFullPInput.value = fullIndexP;
-    } else {
-      fullIndexP = Number(this.calcFullPInput?.value) || HERO_CALIBRATED_FULL_INDEX;
+      currentId = nextTarget;
     }
 
-    const baseIndexP = Number((fullIndexP * (zeroRate / 100)).toFixed(1));
-    if (this.calcBasePInput) this.calcBasePInput.value = baseIndexP;
+    return {
+      visitedSteps,
+      terminalRule: 'RESULT_PERF_SORT',
+      reachedViaQ5Burst: false,
+      reachedViaQ3Easy: false
+    };
+  }
 
-    if (this.calcBpSyncInfo) {
-      const fullEffEquiv = Math.round(fullIndexP * BP_EFF_TO_INDEX_DIVISOR);
-      if (bpStats.count > 0) {
-        this.calcBpSyncInfo.innerHTML =
-          `✅ <strong>[${jobName}] 연무장 ${bpStats.count}명 데이터 연동됨</strong> | ` +
-          `연무장 평균효율: <strong style="color:#f6ad55;">${bpStats.avgEff.toLocaleString()}</strong> / 역산 풀강지수(100%): <strong>${fullIndexP}</strong> (1렙 기본값 <strong>${baseIndexP}</strong>)`;
-      } else {
-        this.calcBpSyncInfo.innerHTML =
-          `🎯 <strong>[${jobName}] 역산 풀강효율(100%): ${fullEffEquiv.toLocaleString()}</strong> (풀강지수 <strong>${fullIndexP}</strong> / 0조각 1렙 ${zeroRate}% 기본값: <strong style="color:#63b3ed;">${baseIndexP}</strong>)`;
-      }
-    }
+  getJobSkillsForStudio(jobName) {
+    const allRecs = this.getActiveRecords();
+    const matched = allRecs.filter(r => this.isSameJob(r?.job, jobName) && Array.isArray(r.skills) && r.skills.length > 0);
+    const manualCats = (this.localDb?.manualSkillCategories && this.localDb.manualSkillCategories[jobName]) || {};
+    const customAdded = (this.localDb?.customJobSkills && this.localDb.customJobSkills[jobName]) || [];
 
-    if (this.calcFragTierButtons && tiers) {
-      const curQ3 = Number(this.calcQ3Input?.value) || 0;
-      const myHeroRate = this.getInterpolatedHexaRate(jobName, 5656).currentRate;
-      const presetItems = [
-        { label: '⭐본캐코어', rate: myHeroRate, frag: 5656 },
-        { label: '2천수준', rate: tiers[0][0], frag: tiers[0][1] },
-        { label: '5천수준', rate: tiers[1][0], frag: tiers[1][1] },
-        { label: '1만수준', rate: tiers[2][0], frag: tiers[2][1] },
-        { label: '2만수준', rate: tiers[3][0], frag: tiers[3][1] },
-        { label: '4만(풀강)', rate: tiers[4][0], frag: tiers[4][1] }
+    const meta = this.utilityDb[jobName] || DEFAULT_JOB_UTILITY_DB[jobName] || {};
+    const skillMap = new Map();
+
+    if (matched.length > 0) {
+      const cnt = matched.length;
+      const windows = [
+        { startMs: 0, endMs: this.burstWindowSec * 1000 },
+        { startMs: 120000, endMs: 120000 + this.burstWindowSec * 1000 },
+        { startMs: 240000, endMs: 240000 + this.burstWindowSec * 1000 }
       ];
 
-      this.calcFragTierButtons.innerHTML = presetItems.map(item => {
-        const isActive = Math.abs(curQ3 - item.frag) < 80;
+      matched.forEach(rec => {
+        const tl30 = new Map();
+        const tl90 = new Map();
+        (rec.timeline || []).forEach(t => {
+          if (!t || !t.skill_name) return;
+          const ms = Number(t.elapse_time) || 0;
+          if (windows.some(w => ms >= w.startMs && ms <= w.endMs)) {
+            tl30.set(t.skill_name, (tl30.get(t.skill_name) || 0) + 1);
+          } else {
+            tl90.set(t.skill_name, (tl90.get(t.skill_name) || 0) + 1);
+          }
+        });
+
+        (rec.skills || []).forEach(sk => {
+          const cur = skillMap.get(sk.name) || { name: sk.name, sumRate: 0, sumUse: 0, sumN30: 0, sumN90: 0 };
+          cur.sumRate += Number(sk.rate) || 0;
+          cur.sumUse += Number(sk.useCount) || 0;
+          cur.sumN30 += tl30.get(sk.name) || 0;
+          cur.sumN90 += tl90.get(sk.name) || 0;
+          skillMap.set(sk.name, cur);
+        });
+      });
+
+      const list = Array.from(skillMap.values()).map(item => {
+        const rate = Number((item.sumRate / cnt).toFixed(2));
+        const useCount = Math.round(item.sumUse / cnt);
+        const n30 = Number((item.sumN30 / cnt).toFixed(1));
+        const n90 = Number((item.sumN90 / cnt).toFixed(1));
+        const role = manualCats[item.name] || this.inferDefaultSkillRole(item.name, rate, useCount, n30, n90);
+        return { name: item.name, rate, useCount, n30, n90, role, isRealRecord: true };
+      });
+
+      customAdded.forEach(cs => {
+        if (!skillMap.has(cs.name)) {
+          list.push({
+            name: cs.name,
+            rate: Number(cs.rate) || 5.0,
+            useCount: cs.useCount || 12,
+            n30: cs.role === 'BURST' ? 3 : 0,
+            n90: cs.role === 'SUSTAIN' ? 9 : 0,
+            role: manualCats[cs.name] || cs.role || 'BURST',
+            isRealRecord: false
+          });
+        }
+      });
+
+      return list.sort((a, b) => b.rate - a.rate);
+    }
+
+    const baseBurst = meta.burstRate ?? 55.0;
+    const remain = Math.max(10, 100 - baseBurst);
+    const defaultTemplate = [
+      { name: `${jobName} 6차 오리진 / 30초 극딜 주력기 I`, rate: Number((baseBurst * 0.46).toFixed(1)), useCount: 36, n30: 3, n90: 0, role: 'BURST' },
+      { name: `${jobName} 5차/6차 극딜 버프 주력기 II`, rate: Number((baseBurst * 0.34).toFixed(1)), useCount: 64, n30: 6, n90: 0, role: 'BURST' },
+      { name: `${jobName} 서브 극딜 / 짧쿨 극딜 연계기`, rate: Number((baseBurst * 0.20).toFixed(1)), useCount: 95, n30: 6, n90: 6, role: 'BURST' },
+      { name: `${jobName} 660ms 상시 주력 평딜기`, rate: Number((remain * 0.65).toFixed(1)), useCount: Math.round(meta.normActions6m * 0.68), n30: 0, n90: 0, role: 'MAIN_660' },
+      { name: `${jobName} 쿨타임 지속 보조기 (쿨뚝 적용)`, rate: Number((remain * 0.20).toFixed(1)), useCount: Math.round(meta.normActions6m * 0.22), n30: 3, n90: 9, role: 'SUSTAIN' },
+      { name: `${jobName} 패시브 사출기 / 파이널 어택`, rate: Number((remain * 0.15).toFixed(1)), useCount: meta.procCasts6m || 800, n30: 0, n90: 0, role: 'PROC' },
+      { name: `리스트레인트 링 / 극딜 시드링 버프`, rate: 0.0, useCount: 3, n30: 3, n90: 0, role: 'BUFF' }
+    ];
+
+    customAdded.forEach(cs => {
+      defaultTemplate.push({
+        name: cs.name,
+        rate: Number(cs.rate) || 5.0,
+        useCount: cs.useCount || 10,
+        n30: cs.role === 'BURST' ? 3 : 0,
+        n90: cs.role === 'SUSTAIN' ? 6 : 0,
+        role: cs.role || 'BURST'
+      });
+    });
+
+    return defaultTemplate.map(sk => ({
+      ...sk,
+      role: manualCats[sk.name] || sk.role,
+      isRealRecord: false
+    }));
+  }
+
+  inferDefaultSkillRole(skillName, rate, useCount, n30, n90) {
+    const name = skillName || '';
+    if (rate <= 0.05 && (n30 + n90 > 0 || useCount <= 12)) return 'BUFF';
+    if (PASSIVE_PROC_SKILL_KEYWORDS.some(kw => name.includes(kw))) return 'PROC';
+    if (KEYDOWN_SKILL_KEYWORDS.some(kw => name.includes(kw)) && n90 === 0) return 'BURST';
+    if (n30 > 0 && n90 === 0) return 'BURST';
+    if (n30 + n90 === 0 && rate >= 12) return 'MAIN_660';
+    if (n30 > 0 && n30 * 1.75 >= n90) return 'BURST';
+    return 'SUSTAIN';
+  }
+
+  calcSingleSkillBurstContribution(sk, isSelectedBurst) {
+    const d = Number(sk.rate) || 0;
+    if (d <= 0 || sk.role === 'BUFF') return 0;
+
+    if (this.burstSumCalcMode === 'RAW_SUM') {
+      return isSelectedBurst ? d : 0;
+    }
+
+    const omega = 1.75;
+    if (sk.role === 'BURST') return isSelectedBurst ? d : 0;
+    if (sk.role === 'MAIN_660') {
+      if (!isSelectedBurst) return 0;
+      const burstExcessShare = (30 * (omega - 1.0)) / (30 * omega + 90 * 1.0);
+      return Number((d * burstExcessShare).toFixed(2));
+    }
+    if (sk.role === 'SUSTAIN' || sk.role === 'PROC') {
+      if (!isSelectedBurst) return 0;
+      if (sk.n30 + sk.n90 > 0) {
+        return Number((d * ((sk.n30 * omega) / (sk.n30 * omega + sk.n90))).toFixed(2));
+      }
+      return Number((d * ((30 * omega) / (30 * omega + 90))).toFixed(2));
+    }
+    return 0;
+  }
+
+  buildAggregatedJobs() {
+    const allRecs = this.getActiveRecords();
+    const savedBurst = this.localDb?.savedJobBurstProfiles || {};
+    const windowScale = this.burstWindowSec === 15 ? 0.76 : (this.burstWindowSec === 20 ? 0.88 : 1.0);
+
+    return MASTER_JOB_LIST.map(jobName => {
+      const meta = this.utilityDb[jobName] || DEFAULT_JOB_UTILITY_DB[jobName] || {};
+      const matched = allRecs.filter(r => this.isSameJob(r?.job, jobName) && r.efficiency > 0);
+      const cnt = matched.length;
+
+      let repName = `${meta.recHatSec > 0 ? meta.recHatSec + '초뚝' : '스탯뚝'} 표준`;
+      let avgDpsNum = Math.round((meta.stdDpmJo || 4.6) * 1e12);
+      let avgPowerNum = Math.round(avgDpsNum / (meta.bpEff || 7138));
+      let efficiency = meta.bpEff || 7138;
+      let rawBurst = meta.burstRate ?? 55.0;
+      let normActions6m = meta.normActions6m || 620;
+      let procCasts6m = meta.procCasts6m || 850;
+
+      if (cnt > 0) {
+        const sortedRecs = [...matched].sort((a, b) => (b.dps || 0) - (a.dps || 0));
+        repName = sortedRecs[0]?.nickname || sortedRecs[0]?.name || repName;
+        avgDpsNum = Math.round(matched.reduce((a, c) => a + (c.dps || 0), 0) / cnt);
+        avgPowerNum = Math.round(matched.reduce((a, c) => a + (c.combatPower || 0), 0) / cnt);
+        if (!this.localDb?.customJobUtilityDb?.[jobName]?.bpEff) {
+          efficiency = avgPowerNum > 0
+            ? Math.round(avgDpsNum / avgPowerNum)
+            : Math.round(matched.reduce((a, c) => a + (c.efficiency || 0), 0) / cnt);
+        }
+      }
+
+      if (savedBurst[jobName] && typeof savedBurst[jobName].burstRate === 'number') {
+        rawBurst = savedBurst[jobName].burstRate;
+      }
+
+      const burst = Number(Math.min(98, Math.max(10, rawBurst * windowScale)).toFixed(1));
+      const tag = burst >= this.burstThreshold ? '극딜' : '평딜';
+      const comboMeta = STRICT_COMBO_JOBS_DB[jobName] || null;
+
+      return {
+        job: jobName,
+        tag,
+        burst,
+        rawBurst,
+        name: repName,
+        dpsNum: avgDpsNum,
+        dps: formatKoreanNumber(avgDpsNum),
+        powerNum: avgPowerNum,
+        power: formatKoreanNumber(avgPowerNum),
+        efficiencyNum: efficiency,
+        efficiency: efficiency.toLocaleString(),
+        records: cnt,
+        normActions6m,
+        procCasts6m,
+        stdDpmJo: meta.stdDpmJo || 4.6,
+        recHatSec: meta.recHatSec ?? 0,
+        cdrShare: meta.cdrShare ?? 25,
+        cdrBaseCool: meta.cdrBaseCool ?? 15,
+        cdrEfficiencyFactor: meta.cdrEfficiencyFactor ?? 0.75,
+        hasIframe: Boolean(meta.hasIframe),
+        iframeCoolSec: Number(meta.iframeCoolSec) || 0,
+        iframeName: meta.iframeName || '정보 없음',
+        hasBind: Boolean(meta.hasBind),
+        attackStyle: comboMeta ? 'COMBO_CDR' : (meta.attackStyle === 'COMBO_CDR' ? 'HOLD_660' : (meta.attackStyle || 'HOLD_660')),
+        comboWeapon: comboMeta ? comboMeta.weapon : null,
+        comboFeature: comboMeta ? comboMeta.feature : null,
+        matchedRecords: matched
+      };
+    });
+  }
+
+  renderAll() {
+    const jobsData = this.buildAggregatedJobs();
+    const allRecs = this.getActiveRecords();
+
+    const topRecText = document.getElementById('topRecordCountText');
+    if (topRecText) {
+      topRecText.textContent = allRecs.length > 0 ? `${allRecs.length.toLocaleString()}개 기록` : `48개 직업 체급 DB`;
+    }
+
+    if (this.kpiTotalRecords) {
+      this.kpiTotalRecords.textContent = allRecs.length > 0 ? allRecs.length.toLocaleString() : '48직업';
+    }
+
+    const avgDpsAll = Math.round(jobsData.reduce((a, b) => a + b.dpsNum, 0) / jobsData.length);
+    if (this.kpiAvgDps) this.kpiAvgDps.textContent = formatKoreanNumber(avgDpsAll);
+
+    const topEffJob = [...jobsData].sort((a, b) => b.efficiencyNum - a.efficiencyNum)[0];
+    if (topEffJob) {
+      if (this.kpiMaxEff) this.kpiMaxEff.textContent = topEffJob.efficiency;
+      if (this.kpiMaxEffJob) this.kpiMaxEffJob.textContent = topEffJob.job;
+    }
+
+    const customCount = Object.keys(this.localDb?.savedJobBurstProfiles || {}).length;
+    if (this.kpiCustomCount) {
+      this.kpiCustomCount.textContent = `${customCount}개 수동보정`;
+    }
+
+    this.renderSidebarClassifier(jobsData);
+    this.renderSidebarCharacters(allRecs);
+    this.renderMainContent(jobsData, allRecs);
+    this.renderBigRecommendOverlay(jobsData);
+    this.renderRightDetailPanel(jobsData);
+    this.renderInlineSimulator(jobsData);
+    this.renderCustomStudioPanel(jobsData);
+  }
+
+  // =========================================================================
+  // [대화면 직업 추천 위자드: 다중 캐릭터 선택 + 질문 1~7 트리 + 선택 캐릭터 한정 출력]
+  // =========================================================================
+  renderBigRecommendOverlay(jobsData) {
+    if (!this.jobRecommendOverlayView || this.mainCenterViewMode !== 'recommend') return;
+
+    const trace = this.traceDecisionTreePath();
+    const excludeComboMode = trace.terminalRule === 'RESULT_NO_COMBO_SORT';
+
+    // 1. 저레벨 캐릭터 필터링 (질문 6에서 '아니오' 선택 시 8대 연계 직업은 캐릭터 후보에서도 자동 숨김!)
+    const maxLowLv = Number(this.recLowLevelLimitInput?.value) || 260;
+    const allLowChars = [...this.accountCharacters]
+      .filter(ch => (Number(ch.level) || 200) <= maxLowLv)
+      .sort((a, b) => (Number(a.level) || 0) - (Number(b.level) || 0));
+
+    // 질문 6 === 아니오(연계 제외)일 때는 카데나 등 8개 연계 직업 카드가 보이지 않도록 필터링
+    const visibleLowChars = excludeComboMode
+      ? allLowChars.filter(ch => !this.isComboJob(ch.job))
+      : allLowChars;
+
+    const selectedInView = visibleLowChars.filter(ch => this.selectedLowCharIds.has(ch.id));
+
+    if (this.lowLevelCharStatusText) {
+      const comboHiddenMsg = excludeComboMode
+        ? ` · <span style="color:var(--orange);">연계 직업(카데나 등 8종) 제외됨</span>`
+        : '';
+      this.lowLevelCharStatusText.innerHTML =
+        `Lv.${maxLowLv} 이하 대상 캐릭터 <b>${visibleLowChars.length}명</b> 중 <b style="color:var(--green);">${selectedInView.length}명 다중 선택됨</b>${comboHiddenMsg}`;
+    }
+
+    if (this.recLowLevelCharGrid) {
+      if (visibleLowChars.length === 0) {
+        this.recLowLevelCharGrid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 24px; color: var(--text-3);">
+            조건에 부합하는 저레벨 캐릭터가 없습니다. 상단 기준 레벨을 높이거나 [🧪 샘플 저레벨 12종 불러오기]를 눌러주세요.
+          </div>
+        `;
+      } else {
+        this.recLowLevelCharGrid.innerHTML = visibleLowChars.map(ch => {
+          const isSel = this.selectedLowCharIds.has(ch.id);
+          const jobMeta = jobsData.find(j => this.isSameJob(j.job, ch.job));
+          const isCombo = this.isComboJob(ch.job);
+          const castCnt = jobMeta ? jobMeta.normActions6m : 600;
+          return `
+            <div class="low-char-card ${isSel ? 'selected-low-char' : ''}" data-cid="${ch.id}">
+              <div class="low-char-top">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span class="low-char-chk">✓</span>
+                  <span class="low-char-lv">Lv.${ch.level}</span>
+                </div>
+                <span class="low-char-world">${ch.world || '스카니아'}</span>
+              </div>
+              <strong class="low-char-name">${ch.nickname}</strong>
+              <div class="low-char-job">
+                <span>${ch.job}</span>
+                <small style="color:var(--text-3); font-size:9px;">${isCombo ? '🎹연계(8종)' : '⚡비연계'} · ${castCnt}회</small>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        this.recLowLevelCharGrid.querySelectorAll('.low-char-card').forEach(card => {
+          card.addEventListener('click', () => {
+            const cid = card.getAttribute('data-cid');
+            if (this.selectedLowCharIds.has(cid)) {
+              this.selectedLowCharIds.delete(cid);
+            } else {
+              this.selectedLowCharIds.add(cid);
+            }
+            this.renderAll();
+          });
+        });
+      }
+    }
+
+    // 2. STEP 2: 질문 트리 렌더링 (경로에 없는 질문 & 내부 영문 코드는 숨기고 진행한 경로만 깔끔히 표시)
+    const visitedIds = new Set(trace.visitedSteps.map(s => s.nodeId));
+    if (!visitedIds.has(this.focusedQuestionId)) {
+      this.focusedQuestionId = trace.visitedSteps[trace.visitedSteps.length - 1]?.nodeId || 'Q1';
+    }
+
+    const terminalTitleMap = {
+      'RESULT_PERF_SORT': '🏆 성능 우선 정렬 (선택한 캐릭터 중 딜 체급·전투 효율 최우선)',
+      'RESULT_CAST_SORT': '⌨️ 스킬 가용횟수 적은순 내림차순 정렬 (조작 편한 캐릭터 우선)',
+      'RESULT_NO_COMBO_SORT': '🚫 연계 직업(카데나·블래·칼리·에반·제로·메르·아크·스커) 제외 정렬'
+    };
+
+    if (this.treeBreadcrumbBar) {
+      const crumbsHtml = trace.visitedSteps.map(st => {
+        const isFocus = st.nodeId === this.focusedQuestionId;
+        const ansClass = st.answer === 'YES' ? 'crumb-ans-yes' : 'crumb-ans-no';
         return `
-          <button type="button" class="frag-tier-btn ${isActive ? 'active-tier' : ''}" data-frag="${item.frag}">
-            <div style="font-weight:bold; color:#fff;">${item.label}</div>
-            <div style="color:#4fd1c5;">${item.rate}%</div>
-            <div style="font-size:9px; color:#a0aec0;">${item.frag.toLocaleString()}개</div>
-          </button>
+          <span class="crumb-node ${isFocus ? 'active-crumb' : ''}" data-focus-q="${st.nodeId}" title="클릭하여 이 질문 다시 선택">
+            질문 ${st.stepNum}<span class="${ansClass}">(${st.answerText})</span>
+          </span>
+          <span style="color:var(--text-3);">➔</span>
         `;
       }).join('');
 
-      this.calcFragTierButtons.querySelectorAll('.frag-tier-btn').forEach(btn => {
+      this.treeBreadcrumbBar.innerHTML =
+        `<strong style="color:var(--primary-bright); margin-right:4px;">진행 경로:</strong>` +
+        crumbsHtml +
+        `<span class="crumb-terminal">${terminalTitleMap[trace.terminalRule] || '정렬 완료'}</span>`;
+
+      this.treeBreadcrumbBar.querySelectorAll('[data-focus-q]').forEach(el => {
+        el.addEventListener('click', () => {
+          this.focusedQuestionId = el.getAttribute('data-focus-q');
+          this.renderAll();
+        });
+      });
+    }
+
+    // 좌측 대형 활성 질문 카드
+    const focusNode = DECISION_TREE_NODES[this.focusedQuestionId] || DECISION_TREE_NODES.Q1;
+    const focusAns = this.treeAnswers[focusNode.id] || 'YES';
+
+    if (this.activeQuestionHeroBox) {
+      this.activeQuestionHeroBox.innerHTML = `
+        <div>
+          <span class="hero-q-badge">STEP 2 · 현재 질문 (클릭 시 다음 질문으로 자동 이동)</span>
+          <h3 class="hero-q-title">${focusNode.question}</h3>
+          <p class="hero-q-sub">${focusNode.subtitle}</p>
+        </div>
+        <div class="hero-yn-buttons">
+          <button type="button" class="yn-btn yes-btn ${focusAns === 'YES' ? 'selected-yn' : ''}" data-q-ans="YES">
+            <strong>${focusNode.yesLabel}</strong>
+            <span>➔ ${focusNode.yesDesc}</span>
+          </button>
+          <button type="button" class="yn-btn no-btn ${focusAns === 'NO' ? 'selected-yn' : ''}" data-q-ans="NO">
+            <strong>${focusNode.noLabel}</strong>
+            <span>➔ ${focusNode.noDesc}</span>
+          </button>
+        </div>
+      `;
+
+      this.activeQuestionHeroBox.querySelectorAll('[data-q-ans]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const fVal = Number(btn.dataset.frag) || 0;
-          if (this.calcQ3Input) this.calcQ3Input.value = fVal;
-          this.calcFragTierButtons.querySelectorAll('.frag-tier-btn').forEach(b => b.classList.remove('active-tier'));
-          btn.classList.add('active-tier');
-          this.recalculateDamageEstimator();
+          const chosen = btn.getAttribute('data-q-ans');
+          this.treeAnswers[focusNode.id] = chosen;
+          const nextId = chosen === 'YES' ? focusNode.yesNext : focusNode.noNext;
+          if (DECISION_TREE_NODES[nextId]) {
+            this.focusedQuestionId = nextId;
+          }
+          this.renderAll();
         });
       });
     }
 
-    this.recalculateDamageEstimator();
-  }
+    // 우측: 전체 7개 질문 대신 '내가 실제로 지나온 질문 단계'만 깔끔한 한글로 표시 (내부 영문 코드 제거!)
+    if (this.treeNodesOverviewBox) {
+      this.treeNodesOverviewBox.innerHTML =
+        `<div style="font-size:11px; color:var(--text-3); margin-bottom:4px; font-weight:700;">📌 현재 응답한 질문 경로 (클릭하여 바로 수정 가능)</div>` +
+        trace.visitedSteps.map((st, idx) => {
+          const isCurrent = st.nodeId === focusNode.id;
+          return `
+            <div class="tree-node-row visited-node ${isCurrent ? 'current-node' : ''}" data-jump-q="${st.nodeId}">
+              <div style="cursor:pointer; flex:1;">
+                <strong style="color:#fff;">${idx + 1}단계. ${st.question}</strong>
+                <div style="font-size:10px; color:var(--primary-bright); margin-top:2px;">
+                  선택 결과: ${st.chosenDesc}
+                </div>
+              </div>
+              <div class="mini-yn-group">
+                <button type="button" class="mini-yn-btn ${st.answer === 'YES' ? 'active-yes' : ''}" data-mini-q="${st.nodeId}" data-mini-ans="YES">예</button>
+                <button type="button" class="mini-yn-btn ${st.answer === 'NO' ? 'active-no' : ''}" data-mini-q="${st.nodeId}" data-mini-ans="NO">아니오</button>
+              </div>
+            </div>
+          `;
+        }).join('');
 
-  recalculateDamageEstimator() {
-    const selectedJob = this.calcJobPresetSelect?.value || '히어로';
-    const P_full = Number(this.calcFullPInput?.value) || HERO_CALIBRATED_FULL_INDEX;
-    const P_base = Number(this.calcBasePInput?.value) || 475.5;
-
-    const Q2 = Number(this.calcQ2Input?.value) || 0;
-    const T2 = Number(this.calcT2Input?.value) || 0;
-    const Q3 = Number(this.calcQ3Input?.value) || 0;
-
-    const cpMan = Number(this.calcCharCpManInput?.value) || 10650;
-    const combatPower = cpMan * 10000;
-    const forceMult = (Number(this.calcForceMultInput?.value) || 132) / 100;
-    const bossHpJo = Number(this.calcBossHpJoInput?.value) || 779;
-    const realFactorK = Number(this.calcRealFactorInput?.value) || 0.70;
-
-    if (this.calcCharCpKoreanLabel) this.calcCharCpKoreanLabel.textContent = Utils.formatKoreanNumber(combatPower);
-
-    const { currentRate, zeroRate } = this.getInterpolatedHexaRate(selectedJob, Q3);
-    const U3 = zeroRate > 0 ? Number(((currentRate - zeroRate) / zeroRate).toFixed(4)) : 0;
-
-    if (this.calcHexaRateBadge) {
-      this.calcHexaRateBadge.textContent = `현재 조각(${Q3.toLocaleString()}개) 헥환보정치: ${currentRate}% (풀강=100%)`;
-    }
-
-    const U2 = T2 <= 1100 ? 0.05 : 0.075;
-    const R2 = P_base + (Q2 * 12);
-    const S2 = R2 * realFactorK;
-
-    const R3 = P_full * (currentRate / 100);
-    const S3 = R3 * realFactorK;
-
-    if (this.calcU2Output) this.calcU2Output.textContent = U2.toString();
-    if (this.calcR2Output) this.calcR2Output.textContent = Number(R2.toFixed(1)).toLocaleString();
-    if (this.calcS2Output) this.calcS2Output.textContent = Number(S2.toFixed(1)).toLocaleString();
-
-    if (this.calcU3Output) {
-      this.calcU3Output.innerHTML = `${currentRate}% <span style="font-size:10px; color:#a0aec0;">(+${(U3 * 100).toFixed(1)}%)</span>`;
-    }
-    if (this.calcR3Output) this.calcR3Output.textContent = Number(R3.toFixed(1)).toLocaleString();
-    if (this.calcS3Output) this.calcS3Output.textContent = Number(S3.toFixed(1)).toLocaleString();
-
-    const fullEff = P_full * BP_EFF_TO_INDEX_DIVISOR;
-    const pureRealDps = combatPower * fullEff * (currentRate / 100) * realFactorK;
-    const forceRealBossDps = pureRealDps * forceMult;
-
-    const bossHpTotal = bossHpJo * 1e12;
-    const clearSeconds = forceRealBossDps > 0 ? (bossHpTotal / forceRealBossDps) : 0;
-    const clearMin = Math.floor(clearSeconds / 60);
-    const clearRemSec = Math.round(clearSeconds % 60);
-
-    const totalDeal18Min = forceRealBossDps * 1080;
-    const totalDeal10Min = forceRealBossDps * 600;
-
-    if (this.calcRealBossDpsOutput) this.calcRealBossDpsOutput.textContent = `${Utils.formatKoreanNumber(forceRealBossDps)} / 초`;
-    if (this.calcPureBossDpsOutput) this.calcPureBossDpsOutput.textContent = `포스 100% 기준: ${Utils.formatKoreanNumber(pureRealDps)}/초 (10분: ${Utils.formatKoreanNumber(totalDeal10Min)})`;
-    if (this.calcClearTimeOutput) this.calcClearTimeOutput.textContent = `${bossHpJo}조 클리어: 약 ${clearMin}분 ${String(clearRemSec).padStart(2, '0')}초`;
-    if (this.calc18MinTotalOutput) this.calc18MinTotalOutput.innerHTML = `18분 누적 딜량: <strong style="color:#4fd1c5;">${Utils.formatKoreanNumber(totalDeal18Min)}</strong>`;
-  }
-
-  async restoreSavedData() {
-    const savedKey = localStorage.getItem(this.STORAGE_KEY_API);
-    if (savedKey && this.apiKeyInput) {
-      this.apiKeyInput.value = savedKey;
-      this.api = new NexonMapleApi(savedKey);
-    }
-
-    try {
-      localStorage.removeItem('MAPLE_SKILL_CLASSIFICATION_DB');
-      const savedManual = localStorage.getItem(this.STORAGE_KEY_MANUAL_CATS);
-      if (savedManual) {
-        Object.entries(JSON.parse(savedManual) || {}).forEach(([sName, cat]) => {
-          this.skillClassificationDb[sName] = { category: cat, manual: true };
+      this.treeNodesOverviewBox.querySelectorAll('[data-jump-q]').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target && e.target.hasAttribute('data-mini-ans')) return;
+          this.focusedQuestionId = row.getAttribute('data-jump-q');
+          this.renderAll();
         });
-      }
-      const savedBurstProfiles = localStorage.getItem(this.STORAGE_KEY_SAVED_BURST_PROFILES);
-      if (savedBurstProfiles) {
-        this.savedJobBurstProfiles = JSON.parse(savedBurstProfiles) || {};
-      }
-    } catch (e) {}
+      });
 
-    try {
-      const res = await ipcRenderer.invoke('load-local-db');
-      if (res && res.success && res.data) {
-        if (res.data.manualSkillCategories && typeof res.data.manualSkillCategories === 'object') {
-          Object.entries(res.data.manualSkillCategories).forEach(([sName, cat]) => {
-            this.skillClassificationDb[sName] = { category: cat, manual: true };
-          });
-        }
-        if (res.data.savedJobBurstProfiles && typeof res.data.savedJobBurstProfiles === 'object') {
-          this.savedJobBurstProfiles = { ...res.data.savedJobBurstProfiles, ...this.savedJobBurstProfiles };
-        }
-        if (res.data.seasons && typeof res.data.seasons === 'object') {
-          Object.entries(res.data.seasons).forEach(([sKey, sObj]) => {
-            const rMap = new Map();
-            (sObj?.records || []).forEach(r => { if (r && r.charName) rMap.set(r.charName, r); });
-            this.seasonsDb.set(sKey, { name: sObj?.name || sKey, recordsMap: rMap });
-          });
-          this.currentSeasonKey = res.data.currentSeasonKey || Array.from(this.seasonsDb.keys())[0] || 'season_5';
-        } else if (Array.isArray(res.data.records)) {
-          const rMap = new Map();
-          const nowIso = new Date().toISOString();
-          res.data.records.forEach(r => {
-            if (!r || !r.charName) return;
-            if (!r.recordDate) r.recordDate = nowIso;
-            rMap.set(r.charName, r);
-          });
-          this.seasonsDb.set('season_5', { name: '5기 연무장', recordsMap: rMap });
-          this.currentSeasonKey = 'season_5';
-          await this.saveRecordsToDisk();
-        }
-      }
-    } catch (err) {
-      console.warn('로컬 DB 로드 실패:', err);
+      this.treeNodesOverviewBox.querySelectorAll('[data-mini-ans]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const qid = btn.getAttribute('data-mini-q');
+          const ans = btn.getAttribute('data-mini-ans');
+          this.treeAnswers[qid] = ans;
+          const nextId = ans === 'YES' ? DECISION_TREE_NODES[qid].yesNext : DECISION_TREE_NODES[qid].noNext;
+          if (DECISION_TREE_NODES[nextId]) {
+            this.focusedQuestionId = nextId;
+          } else {
+            this.focusedQuestionId = qid;
+          }
+          this.renderAll();
+        });
+      });
     }
 
-    if (this.seasonsDb.size === 0) {
-      this.seasonsDb.set('season_5', { name: '5기 연무장', recordsMap: new Map() });
-      this.currentSeasonKey = 'season_5';
-    }
+    // 3. STEP 3: 다중 선택한 캐릭터 한정 최종 정렬 결과 (질문 6 === 아니오 시 카데나 등 8종 완전 제외)
+    const cp = (Number(this.recTargetCpMan?.value) || 10650) * 10000;
+    const frag = Number(this.recTargetFrags?.value) || 5656;
+    const perfFormula = this.recPerfFormulaToggle?.value || 'STD';
+    const castOrder = this.recCastOrderToggle?.value || 'LOW_FIRST';
+    const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
 
-    this.renderSeasonSelectUI();
-    this.refreshAllSeasonViews();
-    this.initDamageCalculatorPresets();
-    this.renderBurstSkillSaveBanners();
-  }
+    let candidateChars = selectedInView.map(ch => {
+      const jobInfo = jobsData.find(j => this.isSameJob(j.job, ch.job)) || jobsData[0];
+      const hexaRate = this.getInterpolatedHexaRate(jobInfo.job, frag);
+      const rateAt40k = this.getInterpolatedHexaRate(jobInfo.job, 40000);
 
-  async saveRecordsToDisk() {
-    const manualSkillCategories = {};
-    Object.entries(this.skillClassificationDb).forEach(([sName, obj]) => {
-      if (obj && obj.manual && obj.category) manualSkillCategories[sName] = obj.category;
-    });
+      const stdIdx = HERO_CALIBRATED_FULL_INDEX * (jobInfo.stdDpmJo / HERO_BASELINE_DPM_JO) * (heroRateAt40k / rateAt40k);
+      const revIdx = HERO_CALIBRATED_FULL_INDEX * (jobInfo.efficiencyNum / 7138);
 
-    try {
-      localStorage.setItem(this.STORAGE_KEY_MANUAL_CATS, JSON.stringify(manualSkillCategories));
-      localStorage.setItem(this.STORAGE_KEY_SAVED_BURST_PROFILES, JSON.stringify(this.savedJobBurstProfiles));
-    } catch (e) {}
+      const stdDps = Math.round(cp * stdIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const revDps = Math.round(cp * revIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const clearSec779 = stdDps > 0 ? Math.round((779 * 1e12) / stdDps) : 9999;
 
-    const seasonsPayload = {};
-    for (const [sKey, sVal] of this.seasonsDb.entries()) {
-      seasonsPayload[sKey] = {
-        name: sVal.name,
-        records: Array.from(sVal.recordsMap.values())
+      const isCombo = this.isComboJob(jobInfo.job);
+      const isBurst = jobInfo.burst >= this.burstThreshold;
+
+      return {
+        charId: ch.id,
+        nickname: ch.nickname,
+        level: ch.level,
+        world: ch.world || '스카니아',
+        ...jobInfo,
+        hexaRate,
+        stdDps,
+        revDps,
+        clearSec779,
+        isCombo,
+        isBurst
       };
+    });
+
+    // 질문 6 -> '아니오' 선택 시 8대 연계 직업(카데나, 블래스터, 칼리, 에반, 제로, 메르세데스, 아크, 스트라이커) 완전 제외
+    if (excludeComboMode) {
+      candidateChars = candidateChars.filter(item => !this.isComboJob(item.job));
+    }
+
+    // 정렬 로직 적용
+    candidateChars.sort((a, b) => {
+      // 질문 6 -> '예'(연계 직업이 좋은가? -> 예)일 때는 8대 연계 직업을 우선 배치한 뒤 성능순 정렬
+      const choseComboYes = trace.visitedSteps.some(s => s.nodeId === 'Q6' && s.answer === 'YES');
+      if (choseComboYes && a.isCombo !== b.isCombo) {
+        return a.isCombo ? -1 : 1;
+      }
+
+      // 질문 5 -> '예'(극딜 캐릭이 좋은가? -> 예) 경로일 때는 극딜 캐릭터를 우선 배치
+      if (trace.reachedViaQ5Burst && a.isBurst !== b.isBurst) {
+        return a.isBurst ? -1 : 1;
+      }
+
+      // 스킬 가용횟수 정렬 도달 시 (질문 4 -> 예 / 질문 7 -> 아니오)
+      if (trace.terminalRule === 'RESULT_CAST_SORT') {
+        if (castOrder === 'HIGH_FIRST') {
+          return b.normActions6m - a.normActions6m;
+        }
+        return a.normActions6m - b.normActions6m;
+      }
+
+      // 성능 우선 정렬
+      if (perfFormula === 'REV') {
+        return b.revDps - a.revDps;
+      }
+      return b.stdDps - a.stdDps;
+    });
+
+    const pathString = trace.visitedSteps.map(s => `질문${s.stepNum}(${s.answerText})`).join(' ➔ ');
+
+    if (this.recCurrentCharBanner) {
+      this.recCurrentCharBanner.innerHTML = `
+        <div>
+          <span style="color: var(--green); font-weight: 800;">🎯 최종 판정 경로:</span>
+          <strong style="color: #fff; margin-left: 6px;">${pathString}</strong>
+          <span style="color: var(--primary-bright); font-weight: 700; margin-left: 8px;">
+            ➔ ${terminalTitleMap[trace.terminalRule]}
+          </span>
+        </div>
+        <div style="color: var(--text-2);">
+          출력 결과: 조건 부합 캐릭터 <b style="color:var(--orange);">${candidateChars.length}명</b>
+        </div>
+      `;
+    }
+
+    if (this.recResultCardsGrid) {
+      if (candidateChars.length === 0) {
+        this.recResultCardsGrid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 36px; color: var(--text-3); font-size: 13px;">
+            ⚠️ 출력할 캐릭터가 없습니다. STEP 1에서 캐릭터를 선택해 주세요!
+          </div>
+        `;
+        return;
+      }
+
+      this.recResultCardsGrid.innerHTML = candidateChars.map((item, idx) => {
+        const min = Math.floor(item.clearSec779 / 60);
+        const sec = String(item.clearSec779 % 60).padStart(2, '0');
+        const apm = (item.normActions6m / 6).toFixed(1);
+
+        const primaryMetricBadge = trace.terminalRule === 'RESULT_CAST_SORT'
+          ? `⌨️ 6분 가용횟수 ${item.normActions6m}회 (분당 ${apm}회)`
+          : (perfFormula === 'REV' ? `🔵 역산효율 ${item.efficiency}` : `🟢 표준체급 ${item.stdDpmJo}조`);
+
+        const comboFeatureLine = item.isCombo && item.comboFeature
+          ? `<div style="font-size:10px; color:#fbd38d; background:rgba(242,164,82,0.1); padding:6px 8px; border-radius:6px; border:1px solid rgba(242,164,82,0.3);">
+               🎹 <b>${item.comboWeapon}:</b> ${item.comboFeature}
+             </div>`
+          : '';
+
+        return `
+          <article class="rec-big-card ${idx === 0 ? 'top-1-card' : ''}" data-job="${item.job}">
+            <div class="rec-big-top">
+              <div style="display:flex; align-items:center; gap:7px; min-width:0;">
+                <span class="rank rank-${idx + 1}">${idx + 1}</span>
+                <div style="display:flex; flex-direction:column;">
+                  <strong style="font-size:14px; color:#fff;">${item.nickname} <span style="color:var(--orange); font-size:11px;">(Lv.${item.level})</span></strong>
+                  <span style="font-size:11px; color:var(--primary-bright); font-weight:700;">
+                    ${item.job} · <span class="${item.tag === '극딜' ? 'type-burst' : 'type-sustain'}">${item.tag} ${item.burst}%</span>
+                  </span>
+                </div>
+              </div>
+              <span class="rec-match-score">${primaryMetricBadge}</span>
+            </div>
+
+            <div class="formula-values" style="background: var(--bg); padding: 8px 10px; border-radius: 7px; border: 1px solid var(--border);">
+              <span style="color: var(--green); font-weight: 700; font-size: 11px;">
+                <i class="standard-dot"></i>🟢 표준체급(Q3): ${formatKoreanNumber(item.stdDps)}/초 (779조 약 ${min}분 ${sec}초)
+              </span>
+              <span style="color: var(--blue); font-weight: 700; font-size: 11px;">
+                <i class="reverse-dot"></i>🔵 내 역산공식: ${formatKoreanNumber(item.revDps)}/초 (전투력효율 ${item.efficiency})
+              </span>
+            </div>
+
+            ${comboFeatureLine}
+
+            <div class="rec-reason-tags">
+              <span class="rec-reason-tag" style="color:#90cdf4; border-color:rgba(85,167,255,0.4);">
+                ⌨️ 6분 스킬 가용횟수: <b>${item.normActions6m}회</b> (사출 ${item.procCasts6m}제외)
+              </span>
+              <span class="rec-reason-tag">
+                ${item.isCombo ? '🎹 연계 직업 (8종)' : '🛋️ 비연계 직업'}
+              </span>
+              <span class="rec-reason-tag">
+                🛡️ 무적: ${item.hasIframe ? item.iframeCoolSec + '초' : '없음'}
+              </span>
+              <span class="rec-reason-tag">
+                🎩 권장: ${item.recHatSec > 0 ? item.recHatSec + '초뚝' : '스탯뚝'}
+              </span>
+            </div>
+          </article>
+        `;
+      }).join('');
+
+      this.recResultCardsGrid.querySelectorAll('.rec-big-card').forEach(card => {
+        card.addEventListener('click', () => {
+          this.selectJob(card.getAttribute('data-job'));
+        });
+      });
+    }
+  }
+
+  renderSidebarClassifier(jobsData) {
+    if (this.classifierThresholdLabel) {
+      this.classifierThresholdLabel.textContent = `30초 피해 비중 ${this.burstThreshold}%`;
+    }
+    if (this.classifierMiniDonut) {
+      this.classifierMiniDonut.style.background = `conic-gradient(var(--primary) ${this.burstThreshold}%, var(--surface-3) 0)`;
+    }
+    if (this.classifierMiniDonutText) {
+      this.classifierMiniDonutText.textContent = String(this.burstThreshold);
+    }
+
+    const burstList = jobsData.filter(j => j.burst >= this.burstThreshold);
+    const sustainList = jobsData.filter(j => j.burst < this.burstThreshold);
+
+    if (this.burstJobCountEm) this.burstJobCountEm.textContent = String(burstList.length);
+    if (this.sustainJobCountEm) this.sustainJobCountEm.textContent = String(sustainList.length);
+
+    if (this.burstJobPills) {
+      this.burstJobPills.innerHTML = burstList.map(j =>
+        `<span class="pill burst-pill ${j.job === this.selectedJob ? 'active-pill' : ''}" data-job="${j.job}" title="${j.job} (${j.burst}%)">${j.job}</span>`
+      ).join('');
+      this.burstJobPills.querySelectorAll('.pill').forEach(p => {
+        p.addEventListener('click', () => this.selectJob(p.dataset.job));
+      });
+    }
+
+    if (this.sustainJobPills) {
+      this.sustainJobPills.innerHTML = sustainList.map(j =>
+        `<span class="pill sustain-pill ${j.job === this.selectedJob ? 'active-pill' : ''}" data-job="${j.job}" title="${j.job} (${j.burst}%)">${j.job}</span>`
+      ).join('');
+      this.sustainJobPills.querySelectorAll('.pill').forEach(p => {
+        p.addEventListener('click', () => this.selectJob(p.dataset.job));
+      });
+    }
+  }
+
+  renderSidebarCharacters(allRecs) {
+    if (!this.sidebarCharListContainer) return;
+    const listSource = this.accountCharacters.length > 0 ? this.accountCharacters : allRecs;
+
+    if (this.charCountBadge) {
+      this.charCountBadge.textContent = `${listSource.length}명`;
+    }
+
+    if (listSource.length === 0) {
+      this.sidebarCharListContainer.innerHTML = `
+        <div class="empty-state">
+          <span>${createIconSvg('users', 22)}</span>
+          <strong>캐릭터를 불러와 주세요</strong>
+          <p>API Key로 계정을 로드한 뒤 저레벨 캐릭터를 클릭하면 다중 선택 목록에 토글됩니다.</p>
+        </div>
+      `;
+      return;
+    }
+
+    if (this.charViewMode === 'job') {
+      const jobGroupMap = new Map();
+      listSource.forEach(c => {
+        const j = c.job || c.character_class || '기타';
+        jobGroupMap.set(j, (jobGroupMap.get(j) || 0) + 1);
+      });
+      const entries = Array.from(jobGroupMap.entries()).sort((a, b) => b[1] - a[1]);
+      this.sidebarCharListContainer.innerHTML = `<div class="sidebar-char-scroll">` +
+        entries.map(([jName, count]) => `
+          <div class="sidebar-char-item" data-job="${jName}">
+            <strong style="color:var(--text);">${jName}</strong>
+            <span style="color:var(--primary-bright); font-weight:700;">${count}명</span>
+          </div>
+        `).join('') + `</div>`;
+    } else {
+      const sortedChars = [...listSource].sort((a, b) => (Number(a.level) || 300) - (Number(b.level) || 300));
+      const displayChars = sortedChars.slice(0, 50);
+      this.sidebarCharListContainer.innerHTML = `<div class="sidebar-char-scroll">` +
+        displayChars.map(c => {
+          const cid = c.id || `char_${c.nickname}`;
+          const isSel = this.selectedLowCharIds.has(cid);
+          const name = c.nickname || c.character_name || c.name || '캐릭터';
+          const job = c.job || c.character_class || '-';
+          const lv = c.level || c.character_level || '';
+          return `
+            <div class="sidebar-char-item ${isSel ? 'selected-sidebar-char' : ''}" data-cid="${cid}" data-job="${job}">
+              <div>
+                <strong style="color:var(--text);">${isSel ? '✓ ' : ''}${name}</strong>
+                <span style="color:var(--text-3); margin-left:5px;">${job}</span>
+              </div>
+              <span style="color:var(--orange); font-weight:700;">${lv ? 'Lv.' + lv : formatKoreanNumber(c.dps || 0)}</span>
+            </div>
+          `;
+        }).join('') + `</div>`;
+    }
+
+    this.sidebarCharListContainer.querySelectorAll('.sidebar-char-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const cid = el.getAttribute('data-cid');
+        const job = el.dataset.job;
+        if (cid) {
+          if (this.selectedLowCharIds.has(cid)) this.selectedLowCharIds.delete(cid);
+          else this.selectedLowCharIds.add(cid);
+          this.switchMainCenterView('recommend');
+        }
+        if (MASTER_JOB_LIST.includes(job)) {
+          this.selectJob(job);
+        }
+      });
+    });
+  }
+
+  renderMainContent(jobsData, allRecs) {
+    const filterJob = this.mainJobFilterSelect?.value || 'ALL';
+    const q = (this.searchQuery || '').trim().toLowerCase();
+
+    let sortedJobs = [...jobsData];
+    if (this.sortMode === 'STD_DESC') {
+      sortedJobs.sort((a, b) => b.stdDpmJo - a.stdDpmJo);
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🟢표준체급(Q3) 딜량순';
+    } else if (this.sortMode === 'BURST_DESC') {
+      sortedJobs.sort((a, b) => b.burst - a.burst);
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🔥30초 극딜 비중순';
+    } else if (this.sortMode === 'ACT_ASC') {
+      sortedJobs.sort((a, b) => a.normActions6m - b.normActions6m);
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: ⌨️스킬 가용횟수 적은순';
+    } else {
+      sortedJobs.sort((a, b) => b.efficiencyNum - a.efficiencyNum);
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🔵인게임 전투력 효율순';
+    }
+
+    sortedJobs.forEach((item, idx) => { item.rank = idx + 1; });
+
+    if (filterJob !== 'ALL') {
+      sortedJobs = sortedJobs.filter(j => this.isSameJob(j.job, filterJob));
+    }
+    if (q) {
+      sortedJobs = sortedJobs.filter(j =>
+        j.job.toLowerCase().includes(q) || (j.name && j.name.toLowerCase().includes(q))
+      );
+    }
+
+    if (this.tabRankingCountBadge) {
+      this.tabRankingCountBadge.textContent = String(sortedJobs.length);
+    }
+
+    if (this.activeTab === 'characters') {
+      this.renderCharactersTabTable(allRecs, filterJob, q);
+      return;
+    }
+    if (this.activeTab === 'skills') {
+      this.renderSkillsTop20TabTable(jobsData);
+      return;
+    }
+    if (this.activeTab === 'detail') {
+      this.renderDetailFormulaTabTable(jobsData);
+      return;
+    }
+
+    if (this.mainTableHead) {
+      this.mainTableHead.innerHTML = `
+        <tr>
+          <th>순위</th>
+          <th>직업 (극딜 비중)</th>
+          <th>대표 캐릭터 / 표준뚝</th>
+          <th>표준 체급 딜량(Q3)</th>
+          <th>기준 전투력</th>
+          <th>전투 효율 (역산)</th>
+          <th>6분 가용횟수</th>
+        </tr>
+      `;
+    }
+
+    const totalItems = sortedJobs.length;
+    const effectivePageSize = this.showAllJobs ? totalItems : this.pageSize;
+    const totalPages = Math.max(1, Math.ceil(totalItems / Math.max(1, effectivePageSize)));
+    if (this.currentPage > totalPages) this.currentPage = 1;
+
+    const startIdx = (this.currentPage - 1) * effectivePageSize;
+    const pageItems = this.showAllJobs ? sortedJobs : sortedJobs.slice(startIdx, startIdx + effectivePageSize);
+
+    if (this.mainTableBody) {
+      this.mainTableBody.innerHTML = pageItems.map(job => {
+        const isSelected = job.job === this.selectedJob;
+        const rankClass = job.rank <= 3 ? `rank-${job.rank}` : '';
+        const customBadge = this.localDb?.savedJobBurstProfiles?.[job.job]
+          ? `<span class="custom-tag-badge">커스텀</span>`
+          : '';
+        return `
+          <tr class="${isSelected ? 'selected' : ''}" data-job="${job.job}">
+            <td><span class="rank ${rankClass}">${job.rank}</span></td>
+            <td>
+              <div class="job-cell">
+                <strong>${job.job}${customBadge}</strong>
+                <span class="${job.tag === '극딜' ? 'type-burst' : 'type-sustain'}">${job.tag} · ${job.burst}%</span>
+              </div>
+            </td>
+            <td>${job.name}</td>
+            <td class="dps">${job.dps}</td>
+            <td>${job.power}</td>
+            <td class="efficiency">${job.efficiency}</td>
+            <td><span class="record-count">${job.normActions6m}회</span></td>
+          </tr>
+        `;
+      }).join('');
+
+      this.mainTableBody.querySelectorAll('tr[data-job]').forEach(tr => {
+        tr.addEventListener('click', () => this.selectJob(tr.dataset.job));
+      });
+    }
+
+    if (this.tableFooterSummary) {
+      this.tableFooterSummary.textContent = `총 ${totalItems}개 직업 중 ${pageItems.length}개 표시`;
+    }
+
+    this.renderPaginationControls(totalPages);
+  }
+
+  renderCharactersTabTable(allRecs, filterJob, q) {
+    if (this.mainTableHead) {
+      this.mainTableHead.innerHTML = `
+        <tr>
+          <th>#</th>
+          <th>닉네임</th>
+          <th>직업</th>
+          <th>연무장 DPS</th>
+          <th>전투력</th>
+          <th>전투 효율</th>
+          <th>무적기 쿨</th>
+        </tr>
+      `;
+    }
+
+    let list = [...allRecs].sort((a, b) => (b.dps || 0) - (a.dps || 0));
+    if (filterJob !== 'ALL') list = list.filter(r => this.isSameJob(r.job, filterJob));
+    if (q) list = list.filter(r => (r.nickname || '').toLowerCase().includes(q) || (r.job || '').toLowerCase().includes(q));
+
+    if (list.length === 0) {
+      this.mainTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-3);">저장된 개별 캐릭터 연무장 기록이 없습니다.</td></tr>`;
+      return;
+    }
+
+    this.mainTableBody.innerHTML = list.slice(0, 50).map((r, i) => {
+      const meta = this.utilityDb[r.job] || {};
+      return `
+        <tr data-job="${r.job}">
+          <td><span class="rank">${i + 1}</span></td>
+          <td><strong style="color:var(--text);">${r.nickname || r.name || '-'}</strong></td>
+          <td>${r.job || '-'}</td>
+          <td class="dps">${formatKoreanNumber(r.dps)}</td>
+          <td>${formatKoreanNumber(r.combatPower)}</td>
+          <td class="efficiency">${(r.efficiency || 0).toLocaleString()}</td>
+          <td><span class="record-count">${meta.hasIframe ? meta.iframeCoolSec + '초' : '없음'}</span></td>
+        </tr>
+      `;
+    }).join('');
+
+    this.mainTableBody.querySelectorAll('tr[data-job]').forEach(tr => {
+      tr.addEventListener('click', () => this.selectJob(tr.dataset.job));
+    });
+  }
+
+  renderSkillsTop20TabTable(jobsData) {
+    const target = jobsData.find(j => j.job === this.selectedJob) || jobsData[0];
+    const skills = this.getJobSkillsForStudio(target.job);
+
+    if (this.mainTableHead) {
+      this.mainTableHead.innerHTML = `
+        <tr>
+          <th>순위</th>
+          <th>[${target.job}] 스킬명</th>
+          <th>현재 판정 분류</th>
+          <th>평균 딜 점유율</th>
+          <th>6분 시전/타수</th>
+          <th>30초/90초 타임라인</th>
+          <th>커스텀 설정</th>
+        </tr>
+      `;
+    }
+
+    const roleLabelMap = {
+      'BURST': '🔥 극딜기 (100% 귀속)',
+      'MAIN_660': '⚡ 660ms 상시주력기',
+      'SUSTAIN': '🔄 평딜기 (지속)',
+      'PROC': '👻 사출기/패시브 (타수제외)',
+      'BUFF': '🛡️ 버프/시드링'
+    };
+
+    this.mainTableBody.innerHTML = skills.map((sk, idx) => `
+      <tr>
+        <td><span class="rank">${idx + 1}</span></td>
+        <td><strong style="color:var(--text);">${sk.name}</strong></td>
+        <td><span class="${sk.role === 'BURST' ? 'type-burst' : 'type-sustain'}">${roleLabelMap[sk.role] || sk.role}</span></td>
+        <td class="dps">${sk.rate}%</td>
+        <td>${sk.useCount.toLocaleString()}회</td>
+        <td>30초:${sk.n30} / 90초:${sk.n90}</td>
+        <td><span class="record-count">우측 스튜디오에서 변경</span></td>
+      </tr>
+    `).join('');
+  }
+
+  renderDetailFormulaTabTable(jobsData) {
+    const target = jobsData.find(j => j.job === this.selectedJob) || jobsData[0];
+    if (this.mainTableHead) {
+      this.mainTableHead.innerHTML = `
+        <tr>
+          <th>착용 모자 (쿨뚝)</th>
+          <th>대상 직업</th>
+          <th>쿨감 적용 후 주력쿨</th>
+          <th>순수 쿨감 딜상승</th>
+          <th>🟢 표준체급 실전 DPS</th>
+          <th>🔵 내 역산공식 실전 DPS</th>
+          <th>목표 보스 클리어</th>
+        </tr>
+      `;
+    }
+
+    const cp = (Number(this.inlineSimCpInput?.value) || 10650) * 10000;
+    const frag = Number(this.inlineSimFragInput?.value) || 5656;
+    const bossHp = (Number(this.inlineSimBossHpInput?.value) || 779) * 1e12;
+    const hexaRate = this.getInterpolatedHexaRate(target.job, frag);
+    const rateAt40k = this.getInterpolatedHexaRate(target.job, 40000);
+    const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
+
+    const hats = [0, 1, 2, 3, 4, 5, 6];
+    this.mainTableBody.innerHTML = hats.map(hatSec => {
+      const cool0 = calcMapleReducedCooldown(target.cdrBaseCool, 0);
+      const coolH = calcMapleReducedCooldown(target.cdrBaseCool, hatSec);
+      const gainPct = hatSec > 0 && coolH < cool0
+        ? Number((target.cdrShare * ((cool0 / coolH) - 1) * target.cdrEfficiencyFactor).toFixed(2))
+        : 0;
+
+      const coolRec = calcMapleReducedCooldown(target.cdrBaseCool, target.recHatSec);
+      const gainRec = target.recHatSec > 0 && coolRec < cool0
+        ? Number((target.cdrShare * ((cool0 / coolRec) - 1) * target.cdrEfficiencyFactor).toFixed(2))
+        : 0;
+
+      const relMult = (1 + gainPct / 100) / (1 + gainRec / 100);
+      const stdIdx = HERO_CALIBRATED_FULL_INDEX * (target.stdDpmJo / HERO_BASELINE_DPM_JO) * (heroRateAt40k / rateAt40k) * relMult;
+      const myIdx = HERO_CALIBRATED_FULL_INDEX * (target.efficiencyNum / 7138) * relMult;
+
+      const stdDps = Math.round(cp * stdIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const myDps = Math.round(cp * myIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const clearSec = stdDps > 0 ? Math.round(bossHp / stdDps) : 0;
+      const isRec = hatSec === target.recHatSec;
+
+      return `
+        <tr class="${isRec ? 'selected' : ''}">
+          <td><span class="rank ${isRec ? 'rank-1' : ''}">${hatSec}초</span></td>
+          <td><strong style="color:var(--text);">${target.job} ${isRec ? '(권장 표준뚝)' : ''}</strong></td>
+          <td>${coolH}초</td>
+          <td class="efficiency">+${gainPct}%</td>
+          <td style="color:var(--green); font-weight:700;">${formatKoreanNumber(stdDps)}/초</td>
+          <td style="color:var(--blue); font-weight:700;">${formatKoreanNumber(myDps)}/초</td>
+          <td><span class="record-count">${Math.floor(clearSec / 60)}분 ${String(clearSec % 60).padStart(2, '0')}초</span></td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  renderPaginationControls(totalPages) {
+    if (!this.tablePagination) return;
+    if (this.showAllJobs) {
+      this.tablePagination.innerHTML = `<button type="button" class="active" id="collapsePageBtn">12개씩 페이지 보기</button>`;
+      document.getElementById('collapsePageBtn')?.addEventListener('click', () => {
+        this.showAllJobs = false;
+        this.renderAll();
+      });
+      return;
+    }
+
+    let html = `<button type="button" data-page="prev">이전</button>`;
+    for (let p = 1; p <= totalPages; p++) {
+      html += `<button type="button" class="${p === this.currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`;
+    }
+    html += `<button type="button" data-page="next">다음</button>`;
+    this.tablePagination.innerHTML = html;
+
+    this.tablePagination.querySelectorAll('button[data-page]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const val = btn.dataset.page;
+        if (val === 'prev') this.currentPage = Math.max(1, this.currentPage - 1);
+        else if (val === 'next') this.currentPage = Math.min(totalPages, this.currentPage + 1);
+        else this.currentPage = Number(val) || 1;
+        this.renderAll();
+      });
+    });
+  }
+
+  renderRightDetailPanel(jobsData) {
+    const target = jobsData.find(j => j.job === this.selectedJob) || jobsData[0];
+    if (!target) return;
+
+    if (this.detailJobTitle) this.detailJobTitle.textContent = `${target.job} 전투 분석`;
+    if (this.detailJobAvatar) this.detailJobAvatar.textContent = target.job.charAt(0);
+
+    const savedProfile = this.localDb?.savedJobBurstProfiles?.[target.job];
+    if (this.detailBurstSourceBadge) {
+      this.detailBurstSourceBadge.textContent = savedProfile
+        ? `30초 극딜 비중 (🛠️ 사용자 수동 저장됨)`
+        : `30초 극딜 비중 (660ms 표준 보정)`;
+      this.detailBurstSourceBadge.style.color = savedProfile ? 'var(--orange)' : 'var(--text-3)';
+    }
+
+    const avgBurst = jobsData.reduce((a, b) => a + b.burst, 0) / jobsData.length;
+    const diffBurst = Number((target.burst - avgBurst).toFixed(1));
+
+    if (this.detailScoreRing) {
+      const ringColor = target.burst >= this.burstThreshold ? 'var(--primary)' : 'var(--blue)';
+      this.detailScoreRing.style.background = `radial-gradient(circle closest-side, var(--surface-2) 79%, transparent 80% 99%), conic-gradient(${ringColor} ${target.burst}%, var(--surface-3) 0)`;
+    }
+    if (this.detailBurstScoreVal) this.detailBurstScoreVal.textContent = String(target.burst);
+    if (this.detailRoleTypeTitle) {
+      this.detailRoleTypeTitle.textContent = target.burst >= this.burstThreshold ? '극딜형 직업' : '지속딜형(평딜) 직업';
+    }
+    if (this.detailBurstDiffText) {
+      this.detailBurstDiffText.textContent = diffBurst >= 0
+        ? `전체 직업 평균보다 ${diffBurst}%p 높아요.`
+        : `전체 직업 평균보다 ${Math.abs(diffBurst)}%p 낮아요 (평딜 우세).`;
+      this.detailBurstDiffText.style.color = diffBurst >= 0 ? 'var(--green)' : 'var(--blue)';
+    }
+
+    if (this.detailTriggerSkillSelect) {
+      const isCombo = this.isComboJob(target.job);
+      this.detailTriggerSkillSelect.innerHTML = `
+        <option>${target.iframeName} / ${isCombo ? '🎹 8대 연계 직업 (' + target.comboWeapon + ')' : '🛋️ 비연계 표준 사이클'}</option>
+      `;
+    }
+
+    if (this.rangeEndLabel) {
+      this.rangeEndLabel.textContent = `+${this.burstWindowSec - 3}초`;
+    }
+
+    const burstDmgNum = Math.round(target.dpsNum * (target.burst / 100));
+    const sustainDmgNum = Math.max(0, target.dpsNum - burstDmgNum);
+    const apm = (target.normActions6m / 6).toFixed(1);
+
+    if (this.metricBurstDmg) this.metricBurstDmg.textContent = formatKoreanNumber(burstDmgNum);
+    if (this.metricSustainDmg) this.metricSustainDmg.textContent = formatKoreanNumber(sustainDmgNum);
+    if (this.metricApmCasts) this.metricApmCasts.textContent = `${apm}회/분 (6분 ${target.normActions6m}회)`;
+    if (this.metricBpEfficiency) this.metricBpEfficiency.textContent = target.efficiency;
+
+    const cp = (Number(this.inlineSimCpInput?.value) || 10650) * 10000;
+    const frag = Number(this.inlineSimFragInput?.value) || 5656;
+    const bossHp = (Number(this.inlineSimBossHpInput?.value) || 779) * 1e12;
+    const hexaRate = this.getInterpolatedHexaRate(target.job, frag);
+    const rateAt40k = this.getInterpolatedHexaRate(target.job, 40000);
+    const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
+
+    const stdIdx = HERO_CALIBRATED_FULL_INDEX * (target.stdDpmJo / HERO_BASELINE_DPM_JO) * (heroRateAt40k / rateAt40k);
+    const myIdx = HERO_CALIBRATED_FULL_INDEX * (target.efficiencyNum / 7138);
+
+    const stdRealDps = Math.round(cp * stdIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+    const myRealDps = Math.round(cp * myIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+    const stdSec = stdRealDps > 0 ? Math.round(bossHp / stdRealDps) : 0;
+
+    if (this.calcHexaRateBadge) this.calcHexaRateBadge.textContent = `헥환 ${hexaRate}%`;
+    if (this.calcStdRealDps) this.calcStdRealDps.textContent = `${formatKoreanNumber(stdRealDps)}/초`;
+    if (this.calcMyRealDps) this.calcMyRealDps.textContent = `${formatKoreanNumber(myRealDps)}/초`;
+    if (this.calcClearTimeText) this.calcClearTimeText.textContent = `약 ${Math.floor(stdSec / 60)}분 ${String(stdSec % 60).padStart(2, '0')}초`;
+    if (this.calcUtilSummaryText) {
+      this.calcUtilSummaryText.textContent = `권장 ${target.recHatSec > 0 ? target.recHatSec + '초뚝' : '스탯뚝'} · 무적 ${target.hasIframe ? target.iframeCoolSec + '초' : '없음'}`;
+    }
+  }
+
+  renderInlineSimulator(jobsData) {
+    if (!this.inlineSimRecommendList) return;
+
+    const cp = (Number(this.inlineSimCpInput?.value) || 10650) * 10000;
+    const frag = Number(this.inlineSimFragInput?.value) || 5656;
+    const hatVal = this.inlineSimHatSelect?.value || 'REC';
+    const iframeFilter = this.inlineSimIframeSelect?.value || 'ALL';
+    const simSort = this.inlineSimSortSelect?.value || 'STD_DESC';
+
+    const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
+    const trace = this.traceDecisionTreePath();
+
+    let simItems = jobsData.map(j => {
+      const activeHat = hatVal === 'REC' ? j.recHatSec : (Number(hatVal) || 0);
+      const cool0 = calcMapleReducedCooldown(j.cdrBaseCool, 0);
+      const coolAct = calcMapleReducedCooldown(j.cdrBaseCool, activeHat);
+      const coolRec = calcMapleReducedCooldown(j.cdrBaseCool, j.recHatSec);
+
+      const gainAct = activeHat > 0 && coolAct < cool0 ? j.cdrShare * ((cool0 / coolAct) - 1) * j.cdrEfficiencyFactor : 0;
+      const gainRec = j.recHatSec > 0 && coolRec < cool0 ? j.cdrShare * ((cool0 / coolRec) - 1) * j.cdrEfficiencyFactor : 0;
+      const gain4 = j.cdrShare * ((cool0 / calcMapleReducedCooldown(j.cdrBaseCool, 4)) - 1) * j.cdrEfficiencyFactor;
+
+      const relMult = (1 + gainAct / 100) / (1 + gainRec / 100);
+      const hexaRate = this.getInterpolatedHexaRate(j.job, frag);
+      const rateAt40k = this.getInterpolatedHexaRate(j.job, 40000);
+
+      const stdIdx = HERO_CALIBRATED_FULL_INDEX * (j.stdDpmJo / HERO_BASELINE_DPM_JO) * (heroRateAt40k / rateAt40k) * relMult;
+      const revIdx = HERO_CALIBRATED_FULL_INDEX * (j.efficiencyNum / 7138) * relMult;
+
+      const stdDps = Math.round(cp * stdIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const revDps = Math.round(cp * revIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
+      const diffPct = stdDps > 0 ? Number((((revDps - stdDps) / stdDps) * 100).toFixed(2)) : 0;
+
+      return {
+        ...j,
+        activeHat,
+        hexaRate,
+        stdDps,
+        revDps,
+        diffPct,
+        gain4: Number(gain4.toFixed(1))
+      };
+    });
+
+    // 질문 6에서 '아니오'(연계 제외)가 활성화된 상태라면 우측 미니 시뮬레이터에서도 카데나 등 8종을 즉시 숨김!
+    if (trace.terminalRule === 'RESULT_NO_COMBO_SORT') {
+      simItems = simItems.filter(it => !this.isComboJob(it.job));
+    }
+
+    if (iframeFilter === 'HAS_IFRAME') simItems = simItems.filter(it => it.hasIframe);
+    else if (!isNaN(Number(iframeFilter)) && Number(iframeFilter) > 0) {
+      const maxCool = Number(iframeFilter);
+      simItems = simItems.filter(it => it.hasIframe && it.iframeCoolSec > 0 && it.iframeCoolSec <= maxCool);
+    }
+
+    if (simSort === 'REV_DESC') simItems.sort((a, b) => b.revDps - a.revDps);
+    else if (simSort === 'CDR_DESC') simItems.sort((a, b) => b.gain4 - a.gain4);
+    else simItems.sort((a, b) => b.stdDps - a.stdDps);
+
+    if (this.inlineSimCountText) {
+      this.inlineSimCountText.textContent = `${simItems.length}개 직업`;
+    }
+
+    this.inlineSimRecommendList.innerHTML = simItems.map((item, idx) => {
+      const sign = item.diffPct >= 0 ? '+' : '';
+      const hatLabel = item.activeHat > 0 ? `${item.activeHat}초뚝` : '스탯뚝';
+      return `
+        <article class="sim-card" data-job="${item.job}">
+          <span class="sim-rank">${idx + 1}</span>
+          <div class="sim-main">
+            <div>
+              <strong>${item.job}</strong>
+              <span>${item.tag}(${item.burst}%) · 헥환 ${item.hexaRate}% · ${hatLabel} · 가용 ${item.normActions6m}회</span>
+            </div>
+            <div class="formula-values">
+              <span style="color: var(--green); font-weight: 600;">
+                <i class="standard-dot"></i>🟢 표준체급(Q3): ${formatKoreanNumber(item.stdDps)}/초
+              </span>
+              <span style="color: var(--blue); font-weight: 600;">
+                <i class="reverse-dot"></i>🔵 내 역산공식: ${formatKoreanNumber(item.revDps)}/초
+              </span>
+            </div>
+          </div>
+          <span class="diff">${sign}${item.diffPct}%</span>
+        </article>
+      `;
+    }).join('');
+
+    this.inlineSimRecommendList.querySelectorAll('.sim-card').forEach(card => {
+      card.addEventListener('click', () => this.selectJob(card.dataset.job));
+    });
+  }
+
+  ensureJobSkillSelectionInitialized(jobName, skills) {
+    if (!this.selectedBurstSkillMap[jobName]) {
+      const savedProfile = this.localDb?.savedJobBurstProfiles?.[jobName];
+      if (savedProfile && Array.isArray(savedProfile.selectedSkills) && savedProfile.selectedSkills.length > 0) {
+        this.selectedBurstSkillMap[jobName] = new Set(savedProfile.selectedSkills);
+      } else {
+        const defaultSet = new Set();
+        skills.forEach(sk => {
+          if (sk.role === 'BURST' || sk.role === 'MAIN_660') {
+            defaultSet.add(sk.name);
+          }
+        });
+        this.selectedBurstSkillMap[jobName] = defaultSet;
+      }
+    }
+    return this.selectedBurstSkillMap[jobName];
+  }
+
+  syncStudioFormInputs(jobName) {
+    const meta = this.utilityDb[jobName] || DEFAULT_JOB_UTILITY_DB[jobName] || {};
+    const savedBurst = this.localDb?.savedJobBurstProfiles?.[jobName]?.burstRate;
+
+    if (this.studioJobSelect) this.studioJobSelect.value = jobName;
+    if (this.studioJobTitle) this.studioJobTitle.textContent = `🛠️ ${jobName} 스킬·DB 직접 수정`;
+
+    if (this.editJobBurstRate) this.editJobBurstRate.value = savedBurst ?? meta.burstRate ?? 55.0;
+    if (this.editJobAttackStyle) {
+      this.editJobAttackStyle.value = STRICT_COMBO_JOBS_DB[jobName] ? 'COMBO_CDR' : (meta.attackStyle === 'COMBO_CDR' ? 'HOLD_660' : (meta.attackStyle || 'HOLD_660'));
+    }
+    if (this.editJobStdDpmJo) this.editJobStdDpmJo.value = meta.stdDpmJo ?? 4.6;
+    if (this.editJobBpEff) this.editJobBpEff.value = meta.bpEff ?? 7138;
+    if (this.editJobRecHatSec) this.editJobRecHatSec.value = String(meta.recHatSec ?? 0);
+    if (this.editJobCdrShare) this.editJobCdrShare.value = meta.cdrShare ?? 25;
+    if (this.editJobCdrBaseCool) this.editJobCdrBaseCool.value = meta.cdrBaseCool ?? 15;
+    if (this.editJobCdrEffFactor) this.editJobCdrEffFactor.value = meta.cdrEfficiencyFactor ?? 0.75;
+    if (this.editJobHasIframe) this.editJobHasIframe.value = String(Boolean(meta.hasIframe));
+    if (this.editJobIframeCool) this.editJobIframeCool.value = meta.iframeCoolSec ?? 0;
+    if (this.editJobIframeName) this.editJobIframeName.value = meta.iframeName || '';
+    if (this.editJobNormActions) this.editJobNormActions.value = meta.normActions6m ?? 620;
+    if (this.editJobProcCasts) this.editJobProcCasts.value = meta.procCasts6m ?? 850;
+  }
+
+  renderCustomStudioPanel(jobsData) {
+    const jobName = this.selectedJob;
+    if (this.studioJobSelect && this.studioJobSelect.value !== jobName) {
+      this.syncStudioFormInputs(jobName);
+    }
+
+    const allSkills = this.getJobSkillsForStudio(jobName);
+    const selectedSet = this.ensureJobSkillSelectionInitialized(jobName, allSkills);
+
+    if (this.studioSkillSourceLabel) {
+      const hasReal = allSkills.some(s => s.isRealRecord);
+      this.studioSkillSourceLabel.textContent = hasReal ? '실제 연무장 기록 연동됨' : '표준 스킬 템플릿 (커스텀 가능)';
+    }
+
+    const separatedSkills = allSkills.filter(sk => sk.role === 'BUFF' || sk.role === 'PROC');
+    const activeCombatSkills = allSkills.filter(sk => sk.role !== 'BUFF');
+
+    if (this.buffAndProcListBody) {
+      if (separatedSkills.length === 0) {
+        this.buffAndProcListBody.innerHTML = `<span style="font-size:10px; color:var(--text-3);">분리된 버프/시드링/사출기가 없습니다.</span>`;
+      } else {
+        this.buffAndProcListBody.innerHTML = `<div class="separated-pill-list">` +
+          separatedSkills.map(sk => `
+            <span class="separated-pill" data-restore-skill="${sk.name}" title="클릭하면 일반 공격 스킬(극딜기)로 복원합니다">
+              ${sk.role === 'BUFF' ? '🛡️버프' : '👻사출'}: ${sk.name} (${sk.rate}%) ↩
+            </span>
+          `).join('') + `</div>`;
+
+        this.buffAndProcListBody.querySelectorAll('[data-restore-skill]').forEach(pill => {
+          pill.addEventListener('click', () => {
+            const sName = pill.getAttribute('data-restore-skill');
+            if (!this.localDb.manualSkillCategories) this.localDb.manualSkillCategories = {};
+            if (!this.localDb.manualSkillCategories[jobName]) this.localDb.manualSkillCategories[jobName] = {};
+            this.localDb.manualSkillCategories[jobName][sName] = 'BURST';
+            selectedSet.add(sName);
+            this.renderAll();
+          });
+        });
+      }
+    }
+
+    let sumAttr30 = 0;
+    let sumRaw = 0;
+    const selectedNames = [];
+
+    activeCombatSkills.forEach(sk => {
+      const isSel = selectedSet.has(sk.name);
+      if (isSel) {
+        selectedNames.push(sk.name);
+        sumRaw += Number(sk.rate) || 0;
+      }
+      const omega = 1.75;
+      if (isSel) {
+        if (sk.role === 'BURST') sumAttr30 += sk.rate;
+        else if (sk.role === 'MAIN_660') sumAttr30 += sk.rate * ((30 * (omega - 1)) / (30 * omega + 90));
+        else if (sk.n30 + sk.n90 > 0) sumAttr30 += sk.rate * ((sk.n30 * omega) / (sk.n30 * omega + sk.n90));
+        else sumAttr30 += sk.rate * ((30 * omega) / (30 * omega + 90));
+      }
+    });
+
+    sumAttr30 = Math.min(100, Number(sumAttr30.toFixed(1)));
+    sumRaw = Math.min(100, Number(sumRaw.toFixed(1)));
+    const activeCalcBurst = this.burstSumCalcMode === 'RAW_SUM' ? sumRaw : sumAttr30;
+
+    if (this.selectedSkillCountText) this.selectedSkillCountText.textContent = String(selectedNames.length);
+    if (this.chip30AttrVal) this.chip30AttrVal.textContent = `${sumAttr30}%`;
+    if (this.chipRawSumVal) this.chipRawSumVal.textContent = `${sumRaw}%`;
+    if (this.selectedBurstSumBtnText) this.selectedBurstSumBtnText.textContent = `${activeCalcBurst}%`;
+
+    if (this.chip30AttrMode && this.chipRawSumMode) {
+      this.chip30AttrMode.classList.toggle('active', this.burstSumCalcMode === 'ATTR_30');
+      this.chipRawSumMode.classList.toggle('active', this.burstSumCalcMode === 'RAW_SUM');
+    }
+
+    if (this.selectedSkillNamesSummary) {
+      this.selectedSkillNamesSummary.innerHTML = selectedNames.length > 0
+        ? `📋 <b>선택된 극딜 귀속 스킬 (${selectedNames.length}개):</b> ${selectedNames.join(', ')}`
+        : `📋 <b>선택된 스킬 없음 (0개):</b> 아래 스킬 행을 클릭해 극딜에 포함할 스킬을 선택하세요.`;
+    }
+
+    if (this.studioSkillListContainer) {
+      this.studioSkillListContainer.innerHTML = activeCombatSkills.map(sk => {
+        const isSel = selectedSet.has(sk.name);
+        const contrib = this.calcSingleSkillBurstContribution(sk, isSel);
+        return `
+          <div class="studio-skill-item ${isSel ? 'selected-burst' : ''}" data-skill-name="${sk.name}">
+            <div class="skill-item-left">
+              <span class="skill-chk-indicator">✓</span>
+              <div class="skill-name-wrap">
+                <strong>${sk.name}</strong>
+                <span>시전 ${sk.useCount.toLocaleString()}회 · 극딜귀속 +${contrib}%</span>
+              </div>
+            </div>
+            <div class="skill-item-right">
+              <span class="skill-rate-badge">${sk.rate}%</span>
+              <select class="skill-role-select" data-role-skill="${sk.name}">
+                <option value="BURST" ${sk.role === 'BURST' ? 'selected' : ''}>🔥극딜기</option>
+                <option value="MAIN_660" ${sk.role === 'MAIN_660' ? 'selected' : ''}>⚡660ms주력</option>
+                <option value="SUSTAIN" ${sk.role === 'SUSTAIN' ? 'selected' : ''}>🔄평딜기</option>
+                <option value="PROC" ${sk.role === 'PROC' ? 'selected' : ''}>👻사출기</option>
+                <option value="BUFF" ${sk.role === 'BUFF' ? 'selected' : ''}>🛡️버프분리</option>
+              </select>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      this.studioSkillListContainer.querySelectorAll('.studio-skill-item').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target && e.target.tagName === 'SELECT') return;
+          const sName = row.getAttribute('data-skill-name');
+          if (selectedSet.has(sName)) selectedSet.delete(sName);
+          else selectedSet.add(sName);
+          this.renderCustomStudioPanel(jobsData);
+        });
+      });
+
+      this.studioSkillListContainer.querySelectorAll('.skill-role-select').forEach(sel => {
+        sel.addEventListener('click', e => e.stopPropagation());
+        sel.addEventListener('change', () => {
+          const sName = sel.getAttribute('data-role-skill');
+          const newRole = sel.value;
+          if (!this.localDb.manualSkillCategories) this.localDb.manualSkillCategories = {};
+          if (!this.localDb.manualSkillCategories[jobName]) this.localDb.manualSkillCategories[jobName] = {};
+          this.localDb.manualSkillCategories[jobName][sName] = newRole;
+
+          if (newRole === 'BURST' || newRole === 'MAIN_660') selectedSet.add(sName);
+          else if (newRole === 'PROC' || newRole === 'BUFF') selectedSet.delete(sName);
+
+          this.renderAll();
+        });
+      });
+    }
+  }
+
+  selectJob(jobName) {
+    if (!jobName) return;
+    this.selectedJob = jobName;
+    this.syncStudioFormInputs(jobName);
+    this.renderAll();
+  }
+
+  async handleSaveJobCustomDb() {
+    const job = this.selectedJob;
+    if (!this.utilityDb[job]) this.utilityDb[job] = {};
+
+    const manualBurst = Number(this.editJobBurstRate?.value);
+    const validBurst = !isNaN(manualBurst) ? Math.min(100, Math.max(5, Number(manualBurst.toFixed(1)))) : 55.0;
+
+    this.utilityDb[job] = {
+      ...this.utilityDb[job],
+      burstRate: validBurst,
+      attackStyle: this.editJobAttackStyle?.value || 'HOLD_660',
+      stdDpmJo: Number(this.editJobStdDpmJo?.value) || 4.6,
+      bpEff: Number(this.editJobBpEff?.value) || 7138,
+      recHatSec: Number(this.editJobRecHatSec?.value) || 0,
+      cdrShare: Number(this.editJobCdrShare?.value) || 25,
+      cdrBaseCool: Number(this.editJobCdrBaseCool?.value) || 15,
+      cdrEfficiencyFactor: Number(this.editJobCdrEffFactor?.value) || 0.75,
+      hasIframe: this.editJobHasIframe?.value === 'true',
+      iframeCoolSec: Number(this.editJobIframeCool?.value) || 0,
+      iframeName: this.editJobIframeName?.value || '정보 없음',
+      normActions6m: Number(this.editJobNormActions?.value) || 620,
+      procCasts6m: Number(this.editJobProcCasts?.value) || 850
+    };
+
+    if (!this.localDb.savedJobBurstProfiles) this.localDb.savedJobBurstProfiles = {};
+    const selSet = this.selectedBurstSkillMap[job] || new Set();
+    this.localDb.savedJobBurstProfiles[job] = {
+      burstRate: validBurst,
+      selectedSkills: Array.from(selSet),
+      updatedAt: new Date().toISOString()
+    };
+
+    await this.persistAllCustomDataToLocalDb(`💾 [${job}] 커스텀 DB(극딜 ${validBurst}%)가 로컬 DB 및 시뮬레이터에 저장되었습니다!`);
+    this.renderAll();
+  }
+
+  async handleResetJobCustomDb() {
+    const job = this.selectedJob;
+    if (DEFAULT_JOB_UTILITY_DB[job]) {
+      this.utilityDb[job] = JSON.parse(JSON.stringify(DEFAULT_JOB_UTILITY_DB[job]));
+    }
+    this.normalizeStrictComboAttackStyles();
+    if (this.localDb?.savedJobBurstProfiles?.[job]) delete this.localDb.savedJobBurstProfiles[job];
+    if (this.localDb?.manualSkillCategories?.[job]) delete this.localDb.manualSkillCategories[job];
+    if (this.localDb?.customJobSkills?.[job]) delete this.localDb.customJobSkills[job];
+    delete this.selectedBurstSkillMap[job];
+
+    this.syncStudioFormInputs(job);
+    await this.persistAllCustomDataToLocalDb(`🔄 [${job}] 설정이 기본값으로 초기화되었습니다.`);
+    this.renderAll();
+  }
+
+  async handleLoadAccount() {
+    const apiKey = (this.apiKeyInput?.value || '').trim();
+    if (!apiKey) {
+      if (this.apiStatusBadge) {
+        this.apiStatusBadge.textContent = 'Key 필요';
+        this.apiStatusBadge.style.color = 'var(--red)';
+      }
+      return;
+    }
+
+    localStorage.setItem('NEXON_OPEN_API_KEY', apiKey);
+    if (this.apiStatusBadge) {
+      this.apiStatusBadge.textContent = '조회 중...';
+      this.apiStatusBadge.style.color = 'var(--orange)';
     }
 
     try {
-      await ipcRenderer.invoke('save-local-db', {
-        currentSeasonKey: this.currentSeasonKey,
-        seasons: seasonsPayload,
-        manualSkillCategories,
-        savedJobBurstProfiles: this.savedJobBurstProfiles
+      const res = await fetch('https://open.api.nexon.com/maplestory/v1/character/list', {
+        headers: { 'x-nxopen-api-key': apiKey }
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      const worldFilter = this.worldFilterSelect?.value || 'ALL';
+      const maxLv = Number(this.maxLevelInput?.value) || 300;
+      const lowLimit = Number(this.recLowLevelLimitInput?.value) || 260;
+
+      const chars = [];
+      let idx = 0;
+      (data.account_list || []).forEach(acc => {
+        (acc.character_list || []).forEach(ch => {
+          if ((worldFilter === 'ALL' || ch.world_name === worldFilter) && ch.character_level <= maxLv) {
+            idx++;
+            chars.push({
+              id: `api_char_${idx}_${ch.character_name}`,
+              nickname: ch.character_name,
+              job: ch.character_class,
+              level: ch.character_level,
+              world: ch.world_name
+            });
+          }
+        });
+      });
+
+      chars.sort((a, b) => a.level - b.level);
+      this.accountCharacters = chars;
+
+      this.selectedLowCharIds = new Set(
+        chars.filter(c => c.level <= lowLimit).map(c => c.id)
+      );
+
+      if (this.apiStatusBadge) {
+        this.apiStatusBadge.textContent = `${chars.length}명 로드됨`;
+        this.apiStatusBadge.style.color = 'var(--green)';
+      }
+      this.renderAll();
     } catch (err) {
-      console.warn('로컬 DB 디스크 저장 실패:', err);
-    }
-
-    this.updateSeasonPeriodBadge();
-    if (this.totalRecordBadge) this.totalRecordBadge.textContent = this.recordsDb.size;
-  }
-
-  renderSeasonSelectUI() {
-    if (!this.seasonSelect) return;
-    const optionsHtml = [];
-    for (const [sKey, sVal] of this.seasonsDb.entries()) {
-      optionsHtml.push(`<option value="${sKey}">${sVal.name} (${sVal.recordsMap.size}건)</option>`);
-    }
-    this.seasonSelect.innerHTML = optionsHtml.join('');
-    this.seasonSelect.value = this.currentSeasonKey;
-  }
-
-  updateSeasonPeriodBadge() {
-    if (!this.seasonPeriodBadge) return;
-    const seasonObj = this.seasonsDb.get(this.currentSeasonKey);
-    const seasonName = seasonObj ? seasonObj.name : '현재 기수';
-    const recs = Array.from(this.recordsDb.values());
-
-    if (recs.length === 0) {
-      this.seasonPeriodBadge.textContent = `📅 ${seasonName} | 기록 없음`;
-      return;
-    }
-
-    const timestamps = [];
-    recs.forEach(r => {
-      const rawDate = r?.recordDate || r?.collectedAt;
-      if (rawDate) {
-        const t = new Date(rawDate).getTime();
-        if (!isNaN(t)) timestamps.push(t);
-      }
-    });
-
-    if (timestamps.length === 0) {
-      this.seasonPeriodBadge.textContent = `📅 ${seasonName} (${recs.length}명) | 기간 정보 없음`;
-      return;
-    }
-
-    const minStr = Utils.formatShortDate(new Date(Math.min(...timestamps)).toISOString());
-    const maxStr = Utils.formatShortDate(new Date(Math.max(...timestamps)).toISOString());
-    this.seasonPeriodBadge.textContent = `📅 ${seasonName} 기간: ${minStr} ~ ${maxStr} (총 ${recs.length}명)`;
-  }
-
-  refreshAllSeasonViews() {
-    this.renderSeasonSelectUI();
-    this.updateSeasonPeriodBadge();
-    this.updateJobFilterDropdown();
-    this.updateJobBurstRoleClassifier();
-    this.updateChuchuRankTable();
-    this.updateAllRecordsTable();
-    this.updateTop20SkillsTable();
-    this.renderBurstSkillSaveBanners();
-  }
-
-  getSkillCategory(skillName, rec = null) {
-    if (!skillName || typeof skillName !== 'string') return '공격';
-    const saved = this.skillClassificationDb[skillName];
-    if (saved && saved.manual && saved.category) return saved.category;
-    if (SEEDRING_KEYWORDS.some(kw => skillName.includes(kw))) return '시드링';
-    if (KNOWN_ATTACK_SUB_KEYWORDS.some(kw => skillName.includes(kw))) return '공격';
-
-    if (rec && Array.isArray(rec.skills)) {
-      const directSkill = rec.skills.find(s => s && s.name === skillName);
-      const directRate = directSkill ? Number(directSkill.rate) || 0 : 0;
-      const meta = (rec.skillMeta && rec.skillMeta[skillName]) || saved || {};
-      const descText = `${meta.description || ''} ${meta.effect || ''}`;
-
-      if (descText.includes('설치') || descText.includes('영역 생성') || skillName.includes('파운틴')) return '설치';
-      if (descText.includes('소환') || skillName.includes('솔 헤카테') || skillName.includes('가디언 오브 노바')) return '소환';
-      if (directRate > 0) return '공격';
-
-      const basePrefix = skillName.split(':')[0].replace(/\s+VI$/i, '').trim();
-      if (basePrefix.length >= 2) {
-        const hasDamagingSibling = rec.skills.some(s => s && typeof s.name === 'string' && (Number(s.rate) || 0) > 0 && s.name.includes(basePrefix));
-        if (hasDamagingSibling) return '공격';
+      if (this.apiStatusBadge) {
+        this.apiStatusBadge.textContent = '조회 실패';
+        this.apiStatusBadge.style.color = 'var(--red)';
       }
     }
-    return '버프';
   }
 
-  async setManualSkillCategory(skillName, newCategory) {
-    if (!skillName || !newCategory) return;
-    const prev = this.skillClassificationDb[skillName] || {};
-    this.skillClassificationDb[skillName] = { ...prev, category: newCategory, manual: true };
-
-    await this.saveRecordsToDisk();
-    this.updateJobBurstRoleClassifier();
-
-    if (this.currentSelectedRecord) {
-      this.renderDetailSkillsTable(this.currentSelectedRecord);
-      this.renderTimelineSection(this.currentSelectedRecord);
-      this.setupRightExtensionPanel(this.currentSelectedRecord);
+  updateWorkspaceGridClasses() {
+    if (!this.mainWorkspace) return;
+    this.mainWorkspace.classList.toggle('without-detail', !this.rightOpen);
+    this.mainWorkspace.classList.toggle('with-studio', this.studioOpen);
+    if (this.rightDetailPanel) this.rightDetailPanel.classList.toggle('hidden', !this.rightOpen);
+    if (this.customDbStudioPanel) this.customDbStudioPanel.classList.toggle('hidden', !this.studioOpen);
+    if (this.toggleCustomStudioBtn) {
+      this.toggleCustomStudioBtn.classList.toggle('active-studio-btn', this.studioOpen);
+      this.toggleCustomStudioBtn.textContent = this.studioOpen ? '🛠️ 스킬·DB 커스텀 설정 닫기' : '🛠️ 스킬·DB 커스텀 설정 열기';
     }
-    this.setStatus(`'${skillName}' 스킬 분류가 [${newCategory}](으)로 수동 보정되어 저장되었습니다.`);
-  }
-
-  classifySkillsOfRecord(rec) {
-    const damageRateMap = new Map();
-    const totalUseMap = new Map();
-    (rec?.skills || []).forEach(s => {
-      if (!s || !s.name) return;
-      damageRateMap.set(s.name, Number(s.rate) || 0);
-      totalUseMap.set(s.name, Number(s.useCount) || 0);
-    });
-
-    const timelineCountMap = new Map();
-    const timelineEventsBySkill = new Map();
-    (rec?.timeline || []).forEach(t => {
-      const name = t?.skill_name;
-      if (!name) return;
-      timelineCountMap.set(name, (timelineCountMap.get(name) || 0) + 1);
-      if (!timelineEventsBySkill.has(name)) timelineEventsBySkill.set(name, []);
-      timelineEventsBySkill.get(name).push(Number(t.elapse_time) || 0);
-    });
-
-    const allSkillNames = new Set([...damageRateMap.keys(), ...timelineCountMap.keys()]);
-    const categoryMap = new Map();
-    const buffSkillSet = new Set();
-
-    allSkillNames.forEach(sName => {
-      const cat = this.getSkillCategory(sName, rec);
-      categoryMap.set(sName, cat);
-      if (cat === '버프' || cat === '시드링') buffSkillSet.add(sName);
-    });
-
-    return { damageRateMap, totalUseMap, timelineCountMap, timelineEventsBySkill, buffSkillSet, categoryMap, allSkillNames };
-  }
-
-  toggleSkillSelection(skillName) {
-    if (!skillName) return;
-    if (this.selectedSkills.has(skillName)) this.selectedSkills.delete(skillName);
-    else this.selectedSkills.add(skillName);
-    this.customBurstRateInputVal = null;
-
-    if (this.timelineSkillDropdownContent) {
-      this.timelineSkillDropdownContent.querySelectorAll('.skill-checkbox').forEach(chk => {
-        chk.checked = this.selectedSkills.has(chk.value);
-      });
-    }
-    this.updateDropdownButtonLabel();
-
-    if (this.currentSelectedRecord) {
-      this.renderDetailSkillsTable(this.currentSelectedRecord);
-      this.renderTimelineSection(this.currentSelectedRecord);
-      this.renderBurstWindowAnalysis(this.currentSelectedRecord);
-    }
-    this.updateTop20SkillsTable();
-    this.renderBurstSkillSaveBanners();
   }
 
   bindEvents() {
-    if (this.apiKeyInput) {
-      this.apiKeyInput.addEventListener('input', () => {
-        const val = this.apiKeyInput.value.trim();
-        localStorage.setItem(this.STORAGE_KEY_API, val);
-        this.api = new NexonMapleApi(val);
+    if (this.toggleMainRecommendBtn) {
+      this.toggleMainRecommendBtn.addEventListener('click', () => {
+        const nextMode = this.mainCenterViewMode === 'recommend' ? 'analytics' : 'recommend';
+        this.switchMainCenterView(nextMode);
+      });
+    }
+    if (this.studioOpenRecommendWizardBtn) {
+      this.studioOpenRecommendWizardBtn.addEventListener('click', () => {
+        this.switchMainCenterView('recommend');
+      });
+    }
+    if (this.backToAnalyticsBtn) {
+      this.backToAnalyticsBtn.addEventListener('click', () => {
+        this.switchMainCenterView('analytics');
       });
     }
 
-    if (this.toggleKeyBtn && this.apiKeyInput) {
-      this.toggleKeyBtn.addEventListener('click', () => {
-        const isPwd = this.apiKeyInput.type === 'password';
-        this.apiKeyInput.type = isPwd ? 'text' : 'password';
-        this.toggleKeyBtn.textContent = isPwd ? '숨김' : '보기';
-      });
+    if (this.recLowLevelLimitInput) {
+      this.recLowLevelLimitInput.addEventListener('input', () => this.renderAll());
     }
-
-    if (this.loadAccountBtn) this.loadAccountBtn.addEventListener('click', () => this.loadAccountCharacters());
-    if (this.worldSelect) this.worldSelect.addEventListener('change', () => this.renderFilteredCharacters());
-    if (this.maxLevelInput) this.maxLevelInput.addEventListener('input', () => this.renderFilteredCharacters());
-
-    if (this.tabCharList) this.tabCharList.addEventListener('click', () => this.switchLeftTab('char'));
-    if (this.tabJobSummary) this.tabJobSummary.addEventListener('click', () => this.switchLeftTab('job'));
-
-    if (this.directSearchBtn && this.directCharInput) {
-      this.directSearchBtn.addEventListener('click', () => this.handleMultipleCharacterSearch());
-      this.directCharInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') this.handleMultipleCharacterSearch();
-      });
-    }
-
-    if (this.baselineJobSelect) {
-      this.baselineJobSelect.addEventListener('change', () => {
-        this.isManualCutoffOverride = false;
-        this.updateJobBurstRoleClassifier();
-        this.updateChuchuRankTable();
-        this.renderBurstSkillSaveBanners();
-      });
-    }
-
-    if (this.burstCutoffInput) {
-      this.burstCutoffInput.addEventListener('input', () => {
-        this.isManualCutoffOverride = true;
-        this.updateJobBurstRoleClassifier();
-        this.updateChuchuRankTable();
-        this.renderBurstSkillSaveBanners();
-      });
-    }
-
-    [this.omegaBaseInput, this.omegaBuffClassInput].forEach(inp => {
-      if (inp) {
-        inp.addEventListener('input', () => {
-          this.updateJobBurstRoleClassifier();
-          this.updateChuchuRankTable();
-          if (this.currentSelectedRecord) {
-            this.renderDetailSkillsTable(this.currentSelectedRecord);
-            this.renderBurstWindowAnalysis(this.currentSelectedRecord, false);
+    if (this.selectAllLowCharsBtn) {
+      this.selectAllLowCharsBtn.addEventListener('click', () => {
+        const maxLowLv = Number(this.recLowLevelLimitInput?.value) || 260;
+        const trace = this.traceDecisionTreePath();
+        const excludeCombo = trace.terminalRule === 'RESULT_NO_COMBO_SORT';
+        this.accountCharacters.forEach(ch => {
+          if ((Number(ch.level) || 200) <= maxLowLv) {
+            if (!excludeCombo || !this.isComboJob(ch.job)) {
+              this.selectedLowCharIds.add(ch.id);
+            }
           }
-          this.renderBurstSkillSaveBanners();
         });
-      }
-    });
-
-    if (this.filterOnlyMyAccountJobsChk) {
-      this.filterOnlyMyAccountJobsChk.addEventListener('change', () => this.updateJobBurstRoleClassifier());
+        this.renderAll();
+      });
+    }
+    if (this.clearSelectedLowCharsBtn) {
+      this.clearSelectedLowCharsBtn.addEventListener('click', () => {
+        this.selectedLowCharIds.clear();
+        this.renderAll();
+      });
+    }
+    if (this.loadSampleLowCharsBtn) {
+      this.loadSampleLowCharsBtn.addEventListener('click', () => {
+        this.accountCharacters = [
+          { id: 'sample_1', nickname: '유니온아란', job: '아란', level: 200, world: '스카니아' },
+          { id: 'sample_2', nickname: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
+          { id: 'sample_3', nickname: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
+          { id: 'sample_4', nickname: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
+          { id: 'sample_5', nickname: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
+          { id: 'sample_6', nickname: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
+          { id: 'sample_7', nickname: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
+          { id: 'sample_8', nickname: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
+          { id: 'sample_9', nickname: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
+          { id: 'sample_10', nickname: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
+          { id: 'sample_11', nickname: '도원호영', job: '호영', level: 250, world: '스카니아' },
+          { id: 'sample_12', nickname: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
+        ];
+        this.selectedLowCharIds = new Set(this.accountCharacters.map(c => c.id));
+        this.renderAll();
+      });
     }
 
-    if (this.toggleExtensionBtn && this.rightExtensionBox) {
+    if (this.recTargetCpMan) this.recTargetCpMan.addEventListener('input', () => this.renderAll());
+    if (this.recTargetFrags) this.recTargetFrags.addEventListener('input', () => this.renderAll());
+    if (this.recPerfFormulaToggle) this.recPerfFormulaToggle.addEventListener('change', () => this.renderAll());
+    if (this.recCastOrderToggle) this.recCastOrderToggle.addEventListener('change', () => this.renderAll());
+
+    if (this.resetSurveyTreeBtn) {
+      this.resetSurveyTreeBtn.addEventListener('click', () => {
+        this.focusedQuestionId = 'Q1';
+        this.renderAll();
+      });
+    }
+
+    if (this.toggleExtensionBtn) {
       this.toggleExtensionBtn.addEventListener('click', () => {
-        this.isExtensionOpen = !this.isExtensionOpen;
-        this.rightExtensionBox.classList.toggle('collapsed', !this.isExtensionOpen);
-        this.toggleExtensionBtn.textContent = this.isExtensionOpen ? '⚡ 확장창 닫기 ◀' : '⚡ 확장창 열기 ▶';
-        try { window.resizeBy(this.isExtensionOpen ? 590 : -590, 0); } catch (e) {}
+        this.rightOpen = !this.rightOpen;
+        this.updateWorkspaceGridClasses();
+        this.toggleExtensionBtn.innerHTML = `${createIconSvg('bolt', 16)} ${this.rightOpen ? '분석 패널 닫기' : '분석 패널 열기'}`;
       });
     }
 
-    if (this.seasonSelect) {
-      this.seasonSelect.addEventListener('change', async (e) => {
-        this.currentSeasonKey = e.target.value;
-        this.selectedSkills.clear();
-        this.isManualCutoffOverride = false;
-        await this.saveRecordsToDisk();
-        this.refreshAllSeasonViews();
-        this.initDamageCalculatorPresets();
-        this.switchRightMode('rank');
+    if (this.toggleCustomStudioBtn) {
+      this.toggleCustomStudioBtn.addEventListener('click', () => {
+        this.studioOpen = !this.studioOpen;
+        this.updateWorkspaceGridClasses();
+      });
+    }
+    if (this.closeStudioPanelBtn) {
+      this.closeStudioPanelBtn.addEventListener('click', () => {
+        this.studioOpen = false;
+        this.updateWorkspaceGridClasses();
       });
     }
 
-    if (this.addSeasonBtn) {
-      this.addSeasonBtn.addEventListener('click', async () => {
-        const nextNum = this.seasonsDb.size + 5;
-        const inputName = window.prompt('새로 추가할 연무장 기수(시즌) 이름을 입력하세요:', `${nextNum}기 연무장`);
-        if (!inputName || !inputName.trim()) return;
-        const cleanName = inputName.trim();
-        const newKey = `season_${Date.now()}`;
-        this.seasonsDb.set(newKey, { name: cleanName, recordsMap: new Map() });
-        this.currentSeasonKey = newKey;
-        this.selectedSkills.clear();
-        this.isManualCutoffOverride = false;
-        await this.saveRecordsToDisk();
-        this.refreshAllSeasonViews();
-        this.initDamageCalculatorPresets();
-        this.switchRightMode('rank');
+    if (this.topQuickSearchBtn) {
+      this.topQuickSearchBtn.addEventListener('click', () => {
+        this.showAllJobs = !this.showAllJobs;
+        this.topQuickSearchBtn.innerHTML = `${createIconSvg('search', 16)} ${this.showAllJobs ? '12개씩 페이지 보기' : '전체 48직업 펼치기'}`;
+        this.renderAll();
       });
     }
 
     if (this.rankJobFilter) {
       this.rankJobFilter.addEventListener('change', () => {
-        const selectedJob = this.rankJobFilter.value;
-        if (selectedJob !== 'ALL') {
-          const restored = this.restoreSavedBurstSkillsForJob(selectedJob);
-          if (!restored) this.selectedSkills.clear();
-        } else {
-          this.selectedSkills.clear();
-        }
-        this.updateChuchuRankTable();
-        this.updateAllRecordsTable();
-        this.updateTop20SkillsTable();
-        this.renderBurstSkillSaveBanners();
-
-        if (selectedJob !== 'ALL' && this.calcJobPresetSelect && HEXA_FRAGMENT_TABLE[selectedJob]) {
-          this.calcJobPresetSelect.value = selectedJob;
-          this.syncCalculatorWithJobAndBp(selectedJob);
-        }
+        const val = this.rankJobFilter.value;
+        if (val && val !== 'ALL') this.selectJob(val);
       });
     }
 
-    if (this.modeChuchuRank) this.modeChuchuRank.addEventListener('click', () => this.switchRightMode('rank'));
-    if (this.modeAllRecords) this.modeAllRecords.addEventListener('click', () => {
-      this.switchRightMode('allRecords');
-      this.updateAllRecordsTable();
-    });
-    if (this.modeTop20Skills) this.modeTop20Skills.addEventListener('click', () => {
-      this.switchRightMode('top20');
-      this.updateTop20SkillsTable();
-      this.renderBurstSkillSaveBanners();
-    });
-    if (this.modeSingleDetail) this.modeSingleDetail.addEventListener('click', () => this.switchRightMode('detail'));
-
-    if (this.hideBuffsInMainTimelineChk) {
-      this.hideBuffsInMainTimelineChk.addEventListener('change', (e) => {
-        this.hideBuffsInMainTimeline = e.target.checked;
-        if (this.currentSelectedRecord) this.renderTimelineSection(this.currentSelectedRecord);
+    if (this.studioJobSelect) {
+      this.studioJobSelect.addEventListener('change', () => {
+        this.selectJob(this.studioJobSelect.value);
       });
     }
-
-    if (this.timelineIntervalSelect) {
-      this.timelineIntervalSelect.addEventListener('change', (e) => {
-        this.currentTimelineInterval = Number(e.target.value) || 30;
-        if (this.currentSelectedRecord) this.renderTimelineSection(this.currentSelectedRecord);
-      });
+    if (this.saveJobCustomDbBtn) {
+      this.saveJobCustomDbBtn.addEventListener('click', () => this.handleSaveJobCustomDb());
+    }
+    if (this.resetJobCustomDbBtn) {
+      this.resetJobCustomDbBtn.addEventListener('click', () => this.handleResetJobCustomDb());
     }
 
-    if (this.top20TimelineIntervalSelect) {
-      this.top20TimelineIntervalSelect.addEventListener('change', (e) => {
-        this.top20TimelineInterval = Number(e.target.value) || 30;
-        this.updateTop20SkillsTable();
-        this.renderBurstSkillSaveBanners();
-      });
-    }
-
-    if (this.clearTop20SelectionBtn) {
-      this.clearTop20SelectionBtn.addEventListener('click', () => {
-        this.selectedSkills.clear();
-        this.customBurstRateInputVal = null;
-        this.updateDropdownButtonLabel();
-        this.updateTop20SkillsTable();
-        this.renderBurstSkillSaveBanners();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderTimelineSection(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord);
-        }
-      });
-    }
-
-    if (this.fetchApiSkillMetaBtn) {
-      this.fetchApiSkillMetaBtn.addEventListener('click', async () => {
-        if (!this.currentSelectedRecord) return this.setStatus('먼저 캐릭터를 선택해주세요.', true);
-        if (!this.ensureApi()) return;
-        const charName = this.currentSelectedRecord.charName;
-        try {
-          this.setStatus(`'${charName}'의 스킬 설명 및 HEXA 조각수 수집 중...`);
-          const { ocid } = await this.api.getOcid(charName);
-          const [skillMeta, hexaData] = await Promise.all([
-            this.api.getCharacterSkillsByGrades(ocid),
-            this.api.getCharacterHexaMatrix(ocid).catch(() => null)
-          ]);
-          this.currentSelectedRecord.skillMeta = skillMeta;
-          const { combatFragments } = Utils.calculateHexaFragmentsFromApi(hexaData);
-          if (combatFragments > 0) {
-            this.currentSelectedRecord.usedFragments = combatFragments;
-            if (this.calcQ3Input) this.calcQ3Input.value = combatFragments;
-          }
-          Object.entries(skillMeta).forEach(([sName, meta]) => {
-            const existing = this.skillClassificationDb[sName] || {};
-            this.skillClassificationDb[sName] = {
-              ...existing,
-              grade: meta.grade,
-              description: meta.description,
-              effect: meta.effect,
-              category: existing.manual ? existing.category : this.getSkillCategory(sName, this.currentSelectedRecord)
-            };
-          });
-          await this.saveRecordsToDisk();
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.setupRightExtensionPanel(this.currentSelectedRecord);
-          this.recalculateDamageEstimator();
-          this.setStatus(`'${charName}' 스킬 정보 및 6차 조각수(${combatFragments.toLocaleString()}개) 반영 완료!`);
-        } catch (err) {
-          this.setStatus(`스킬 정보 수집 실패: ${err.message}`, true);
-        }
-      });
-    }
-
-    if (this.skillDbCategoryFilter) {
-      this.skillDbCategoryFilter.addEventListener('change', () => {
-        if (this.currentSelectedRecord) this.renderSkillClassifierTable(this.currentSelectedRecord);
-      });
-    }
-
-    if (this.burstTriggerSkillSelect) {
-      this.burstTriggerSkillSelect.addEventListener('change', (e) => {
-        this.currentBurstTriggerSkill = e.target.value;
-        this.selectedBurstRound = 'ALL';
-        if (this.currentSelectedRecord) {
-          this.highlightActiveBuffPill();
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord, true);
-        }
-      });
-    }
-
-    if (this.burstWindowSecInput) {
-      this.burstWindowSecInput.addEventListener('input', (e) => {
-        const val = Math.max(5, Math.min(120, Number(e.target.value) || 30));
-        this.burstWindowSeconds = val;
-        document.querySelectorAll('.burst-preset-btn').forEach(btn => {
-          btn.classList.toggle('active-preset', Number(btn.dataset.sec) === val);
+    if (this.studioSubTabs) {
+      this.studioSubTabs.querySelectorAll('button[data-stab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.studioSubTab = btn.dataset.stab;
+          this.studioSubTabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.studioSkillsTabView?.classList.toggle('hidden', this.studioSubTab !== 'skills');
+          this.studioParamsTabView?.classList.toggle('hidden', this.studioSubTab !== 'params');
         });
-        this.updateJobBurstRoleClassifier();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord, true);
+      });
+    }
+
+    if (this.toggleBuffListAccordionBtn && this.buffAndProcListBody) {
+      this.toggleBuffListAccordionBtn.addEventListener('click', () => {
+        this.buffAndProcListBody.classList.toggle('hidden');
+      });
+    }
+
+    if (this.chip30AttrMode) {
+      this.chip30AttrMode.addEventListener('click', () => {
+        this.burstSumCalcMode = 'ATTR_30';
+        this.renderAll();
+      });
+    }
+    if (this.chipRawSumMode) {
+      this.chipRawSumMode.addEventListener('click', () => {
+        this.burstSumCalcMode = 'RAW_SUM';
+        this.renderAll();
+      });
+    }
+
+    if (this.selectAllBurstSkillsBtn) {
+      this.selectAllBurstSkillsBtn.addEventListener('click', () => {
+        const skills = this.getJobSkillsForStudio(this.selectedJob);
+        const set = new Set();
+        skills.forEach(sk => {
+          if (sk.role === 'BURST' || sk.role === 'MAIN_660') set.add(sk.name);
+        });
+        this.selectedBurstSkillMap[this.selectedJob] = set;
+        this.renderAll();
+      });
+    }
+    if (this.clearAllBurstSkillsBtn) {
+      this.clearAllBurstSkillsBtn.addEventListener('click', () => {
+        this.selectedBurstSkillMap[this.selectedJob] = new Set();
+        this.renderAll();
+      });
+    }
+
+    if (this.applySelectedBurstRateBtn) {
+      this.applySelectedBurstRateBtn.addEventListener('click', async () => {
+        const rawText = (this.selectedBurstSumBtnText?.textContent || '50').replace('%', '');
+        const newRate = Number(rawText) || 50.0;
+        if (this.editJobBurstRate) this.editJobBurstRate.value = newRate;
+        await this.handleSaveJobCustomDb();
+      });
+    }
+
+    if (this.addCustomSkillBtn) {
+      this.addCustomSkillBtn.addEventListener('click', () => {
+        const sName = (this.newCustomSkillName?.value || '').trim();
+        const sRate = Number(this.newCustomSkillRate?.value) || 5.0;
+        const sRole = this.newCustomSkillRole?.value || 'BURST';
+        if (!sName) return;
+
+        if (!this.localDb.customJobSkills) this.localDb.customJobSkills = {};
+        if (!this.localDb.customJobSkills[this.selectedJob]) this.localDb.customJobSkills[this.selectedJob] = [];
+        this.localDb.customJobSkills[this.selectedJob].push({ name: sName, rate: sRate, role: sRole });
+
+        const set = this.ensureJobSkillSelectionInitialized(this.selectedJob, []);
+        if (sRole === 'BURST' || sRole === 'MAIN_660') set.add(sName);
+
+        if (this.newCustomSkillName) this.newCustomSkillName.value = '';
+        if (this.newCustomSkillRate) this.newCustomSkillRate.value = '';
+        this.renderAll();
+      });
+    }
+
+    if (this.toggleApiKeyVisBtn && this.apiKeyInput) {
+      this.toggleApiKeyVisBtn.addEventListener('click', () => {
+        const isPw = this.apiKeyInput.type === 'password';
+        this.apiKeyInput.type = isPw ? 'text' : 'password';
+        this.toggleApiKeyVisBtn.textContent = isPw ? '숨김' : '보기';
+      });
+    }
+    if (this.loadAccountBtn) {
+      this.loadAccountBtn.addEventListener('click', () => this.handleLoadAccount());
+    }
+
+    if (this.nicknameSearchInput) {
+      this.nicknameSearchInput.addEventListener('input', () => {
+        this.searchQuery = this.nicknameSearchInput.value;
+        this.currentPage = 1;
+        const exactJob = MASTER_JOB_LIST.find(j => j === this.searchQuery.trim());
+        if (exactJob) this.selectJob(exactJob);
+        else this.renderAll();
+      });
+    }
+    if (this.nicknameSearchBtn) {
+      this.nicknameSearchBtn.addEventListener('click', () => {
+        this.searchQuery = this.nicknameSearchInput?.value || '';
+        this.renderAll();
+      });
+    }
+
+    if (this.charViewIndivBtn && this.charViewJobBtn) {
+      this.charViewIndivBtn.addEventListener('click', () => {
+        this.charViewMode = 'indiv';
+        this.charViewIndivBtn.classList.add('active');
+        this.charViewJobBtn.classList.remove('active');
+        this.renderAll();
+      });
+      this.charViewJobBtn.addEventListener('click', () => {
+        this.charViewMode = 'job';
+        this.charViewJobBtn.classList.add('active');
+        this.charViewIndivBtn.classList.remove('active');
+        this.renderAll();
+      });
+    }
+
+    if (this.cycleThresholdBtn) {
+      this.cycleThresholdBtn.addEventListener('click', () => {
+        const nextMap = { 50: 55, 55: 45, 45: 50 };
+        this.burstThreshold = nextMap[this.burstThreshold] || 50;
+        this.renderAll();
+      });
+    }
+
+    if (this.seasonFilterSelect) {
+      this.seasonFilterSelect.addEventListener('change', () => this.renderAll());
+    }
+    if (this.mainJobFilterSelect) {
+      this.mainJobFilterSelect.addEventListener('change', () => {
+        const val = this.mainJobFilterSelect.value;
+        if (val !== 'ALL') this.selectJob(val);
+        else {
+          this.currentPage = 1;
+          this.renderAll();
         }
       });
     }
 
-    if (this.burstRoundSelect) {
-      this.burstRoundSelect.addEventListener('change', (e) => {
-        this.selectedBurstRound = e.target.value;
-        if (this.currentSelectedRecord) this.renderBurstWindowAnalysis(this.currentSelectedRecord, false);
+    if (this.mainContentTabs) {
+      this.mainContentTabs.querySelectorAll('button[data-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.activeTab = btn.dataset.tab;
+          this.mainContentTabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.renderAll();
+        });
       });
     }
 
-    document.querySelectorAll('.burst-preset-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const sec = Number(btn.dataset.sec) || 30;
-        this.burstWindowSeconds = sec;
-        if (this.burstWindowSecInput) this.burstWindowSecInput.value = sec;
-        document.querySelectorAll('.burst-preset-btn').forEach(b => b.classList.remove('active-preset'));
-        btn.classList.add('active-preset');
-        this.updateJobBurstRoleClassifier();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord, true);
-        }
+    if (this.cycleSortModeBtn) {
+      this.cycleSortModeBtn.addEventListener('click', () => {
+        const modes = ['EFF_DESC', 'STD_DESC', 'BURST_DESC', 'ACT_ASC'];
+        const nextIdx = (modes.indexOf(this.sortMode) + 1) % modes.length;
+        this.sortMode = modes[nextIdx];
+        this.renderAll();
       });
-    });
-
-    if (this.calcJobPresetSelect) {
-      this.calcJobPresetSelect.addEventListener('change', (e) => this.syncCalculatorWithJobAndBp(e.target.value));
     }
 
-    if (this.applyHeroCalibrationBtn) {
-      this.applyHeroCalibrationBtn.addEventListener('click', () => this.applyHeroMainCalibration());
+    if (this.detailModeTabs) {
+      this.detailModeTabs.querySelectorAll('button[data-dmode]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.detailMode = btn.dataset.dmode;
+          this.detailModeTabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.detailBurstView?.classList.toggle('hidden', this.detailMode !== 'burst');
+          this.detailCalcView?.classList.toggle('hidden', this.detailMode !== 'calc');
+        });
+      });
     }
 
-    if (this.calcFullPInput) {
-      this.calcFullPInput.addEventListener('input', () => {
-        const selectedJob = this.calcJobPresetSelect?.value || '히어로';
-        const { zeroRate } = this.getInterpolatedHexaRate(selectedJob, 0);
-        const fullVal = Number(this.calcFullPInput.value) || 0;
-        if (this.calcBasePInput) this.calcBasePInput.value = Number((fullVal * (zeroRate / 100)).toFixed(1));
-        this.recalculateDamageEstimator();
+    if (this.detailRangeAccordionBtn && this.detailRangeAccordionBody) {
+      this.detailRangeAccordionBtn.addEventListener('click', () => {
+        this.detailRangeAccordionBody.classList.toggle('hidden');
+      });
+    }
+    if (this.burstWindowPresetRow) {
+      this.burstWindowPresetRow.querySelectorAll('button[data-window]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.burstWindowSec = Number(btn.dataset.window) || 30;
+          this.burstWindowPresetRow.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.renderAll();
+        });
+      });
+    }
+
+    if (this.inlineSimTabs) {
+      this.inlineSimTabs.querySelectorAll('button[data-simtab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.simTab = btn.dataset.simtab;
+          this.inlineSimTabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.inlineSimRecommendList?.classList.toggle('hidden', this.simTab !== 'recommend');
+          this.inlineSimSettingsPanel?.classList.toggle('hidden', this.simTab !== 'settings');
+        });
       });
     }
 
     [
-      this.calcBasePInput, this.calcQ2Input, this.calcT2Input, this.calcQ3Input,
-      this.calcCharCpManInput, this.calcForceMultInput, this.calcBossHpJoInput, this.calcRealFactorInput
-    ].forEach(inp => {
-      if (inp) inp.addEventListener('input', () => this.recalculateDamageEstimator());
-    });
-
-    if (this.timelineSkillDropdownBtn && this.timelineSkillDropdownContent) {
-      this.timelineSkillDropdownBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.timelineSkillDropdownContent.classList.toggle('show');
-      });
-      window.addEventListener('click', () => this.timelineSkillDropdownContent.classList.remove('show'));
-      this.timelineSkillDropdownContent.addEventListener('click', (e) => e.stopPropagation());
-    }
-  }
-
-  setStatus(text, isError = false) {
-    if (this.statusBadge) {
-      this.statusBadge.textContent = text;
-      this.statusBadge.style.color = isError ? '#ff6b6b' : '#ff9900';
-    }
-  }
-
-  ensureApi() {
-    const key = this.apiKeyInput ? this.apiKeyInput.value.trim() : '';
-    if (!key) {
-      this.setStatus('API Key를 먼저 입력해주세요!', true);
-      return false;
-    }
-    localStorage.setItem(this.STORAGE_KEY_API, key);
-    this.api = new NexonMapleApi(key);
-    return true;
-  }
-
-  switchLeftTab(mode) {
-    const isChar = mode === 'char';
-    if (this.tabCharList) this.tabCharList.classList.toggle('active', isChar);
-    if (this.tabJobSummary) this.tabJobSummary.classList.toggle('active', !isChar);
-    if (this.charListTable) this.charListTable.classList.toggle('hidden', !isChar);
-    if (this.jobSummaryTable) this.jobSummaryTable.classList.toggle('hidden', isChar);
-  }
-
-  switchRightMode(mode) {
-    const isRank = mode === 'rank', isAllRecords = mode === 'allRecords', isTop20 = mode === 'top20';
-    if (this.modeChuchuRank) this.modeChuchuRank.classList.toggle('active', isRank);
-    if (this.modeAllRecords) this.modeAllRecords.classList.toggle('active', isAllRecords);
-    if (this.modeTop20Skills) this.modeTop20Skills.classList.toggle('active', isTop20);
-    if (this.modeSingleDetail) this.modeSingleDetail.classList.toggle('active', !isRank && !isAllRecords && !isTop20);
-
-    if (this.chuchuRankView) this.chuchuRankView.classList.toggle('hidden', !isRank);
-    if (this.allRecordsView) this.allRecordsView.classList.toggle('hidden', !isAllRecords);
-    if (this.top20SkillsView) this.top20SkillsView.classList.toggle('hidden', !isTop20);
-    if (this.singleDetailView) this.singleDetailView.classList.toggle('hidden', isRank || isAllRecords || isTop20);
-  }
-
-  async loadAccountCharacters() {
-    if (!this.ensureApi()) return;
-    try {
-      this.setStatus('계정 캐릭터 불러오는 중...');
-      const data = await this.api.getAccountCharacters();
-      this.allCharacters = [];
-      const worldSet = new Set();
-      (data.account_list || []).forEach(acc => {
-        (acc.character_list || []).forEach(ch => {
-          this.allCharacters.push(ch);
-          if (ch.world_name) worldSet.add(ch.world_name);
-        });
-      });
-      this.allCharacters.sort((a, b) => (b.character_level || 0) - (a.character_level || 0));
-
-      if (this.worldSelect) {
-        const worlds = Array.from(worldSet);
-        this.worldSelect.innerHTML = `<option value="ALL">전체 월드 (${this.allCharacters.length})</option>` +
-          worlds.map(w => `<option value="${w}">${w}</option>`).join('');
-        this.worldSelect.disabled = false;
-      }
-      this.renderFilteredCharacters();
-      this.setStatus(`총 ${this.allCharacters.length}캐릭 로드 완료`);
-    } catch (err) {
-      this.setStatus(`로드 실패: ${err.message}`, true);
-    }
-  }
-
-  renderFilteredCharacters() {
-    const selectedWorld = this.worldSelect ? this.worldSelect.value : 'ALL';
-    const maxLevel = this.maxLevelInput ? (Number(this.maxLevelInput.value) || 300) : 300;
-
-    this.filteredCharacters = this.allCharacters.filter(ch => {
-      const matchWorld = selectedWorld === 'ALL' || ch.world_name === selectedWorld;
-      const matchLevel = (Number(ch.character_level) || 0) <= maxLevel;
-      return matchWorld && matchLevel;
-    });
-
-    const totalLvSum = this.filteredCharacters.reduce((acc, cur) => acc + (Number(cur.character_level) || 0), 0);
-    if (this.charCountInfo) {
-      this.charCountInfo.textContent = `${maxLevel}Lv 이하: ${this.filteredCharacters.length}명 (레벨 합: ${totalLvSum.toLocaleString()})`;
-    }
-
-    if (this.charListBody) {
-      if (this.filteredCharacters.length === 0) {
-        this.charListBody.innerHTML = `<tr><td colspan="4" class="empty-msg">조건에 해당하는 캐릭터가 없습니다.</td></tr>`;
-      } else {
-        this.charListBody.innerHTML = this.filteredCharacters.map(ch => `
-          <tr class="clickable-row" data-name="${ch.character_name}" data-job="${ch.character_class}" data-lv="${ch.character_level}">
-            <td><strong>${ch.character_name}</strong></td>
-            <td>${ch.character_class}</td>
-            <td>Lv.${ch.character_level}</td>
-            <td>${ch.world_name}</td>
-          </tr>
-        `).join('');
-
-        this.charListBody.querySelectorAll('.clickable-row').forEach(row => {
-          row.addEventListener('click', async () => {
-            this.charListBody.querySelectorAll('.clickable-row').forEach(r => r.classList.remove('selected'));
-            row.classList.add('selected');
-            await this.loadAccountCharacterHexaToQ3(row.dataset.name, row.dataset.job, Number(row.dataset.lv) || 0);
-          });
-        });
-      }
-    }
-
-    this.updateJobBurstRoleClassifier();
-
-    if (this.jobSummaryBody) {
-      const grouped = Utils.groupByJob(this.filteredCharacters);
-      const currentFilterJob = this.rankJobFilter ? this.rankJobFilter.value : 'ALL';
-      const activeCutoff = Number(this.burstCutoffInput?.value) || 50.0;
-
-      this.jobSummaryBody.innerHTML = grouped.length === 0
-        ? `<tr><td colspan="3" class="empty-msg">데이터 없음</td></tr>`
-        : grouped.map(g => {
-            const isSelected = currentFilterJob !== 'ALL' && Utils.isSameJob(g.job, currentFilterJob);
-            const aliases = JOB_NAME_ALIASES[g.job] || [g.job];
-            const statKey = aliases.find(k => this.jobBurstStatsCache.has(k)) || g.job;
-            const bStat = this.jobBurstStatsCache.get(statKey);
-            let roleBadge = `<span style="color:#718096; font-size:10px; margin-left:4px;">[미분류]</span>`;
-            if (bStat && bStat.avgBurstRate !== null) {
-              const savedMark = bStat.isManualSaved ? '💾' : (bStat.isBuffCentric ? '⚡' : '');
-              roleBadge = bStat.avgBurstRate >= activeCutoff
-                ? `<span style="color:#fc8181; font-size:10px; margin-left:4px;">[${savedMark}🔥극딜 ${bStat.avgBurstRate}%]</span>`
-                : `<span style="color:#63b3ed; font-size:10px; margin-left:4px;">[${savedMark}🔄평딜 ${bStat.avgBurstRate}%]</span>`;
-            }
-
-            return `
-              <tr class="clickable-row skill-selectable-row ${isSelected ? 'selected-skill-row' : ''}" data-job="${g.job}">
-                <td><strong>${g.job}</strong>${roleBadge}</td>
-                <td>${g.count}개</td>
-                <td>${g.levels.map(l => `<span class="level-badge">Lv.${l}</span>`).join('')}</td>
-              </tr>
-            `;
-          }).join('');
-
-      this.jobSummaryBody.querySelectorAll('.clickable-row').forEach(row => {
-        row.addEventListener('click', async () => {
-          this.jobSummaryBody.querySelectorAll('.clickable-row').forEach(r => {
-            r.classList.remove('selected', 'selected-skill-row');
-          });
-          row.classList.add('selected', 'selected-skill-row');
-
-          const targetJob = row.dataset.job;
-          const myCharsOfJob = this.filteredCharacters
-            .filter(c => c.character_class === targetJob)
-            .sort((a, b) => (b.character_level || 0) - (a.character_level || 0));
-
-          if (myCharsOfJob.length > 0 && (Number(myCharsOfJob[0].character_level) || 0) >= 260) {
-            const topChar = myCharsOfJob[0];
-            await this.loadAccountCharacterHexaToQ3(topChar.character_name, topChar.character_class, Number(topChar.character_level));
-          } else {
-            this.selectJobFromLeftPanel(targetJob, true);
-          }
-        });
-      });
-    }
-  }
-
-  async handleMultipleCharacterSearch() {
-    if (!this.ensureApi()) return;
-    const rawText = this.directCharInput ? this.directCharInput.value.trim() : '';
-    if (!rawText) return this.setStatus('조회할 닉네임을 입력하세요.', true);
-
-    const inputNames = rawText.split(/[,，\s]+/).map(n => n.trim()).filter(n => n.length > 0);
-    if (inputNames.length === 0) return;
-
-    const currentSeasonName = this.seasonsDb.get(this.currentSeasonKey)?.name || '현재 기수';
-    const targetNames = inputNames.filter(name => {
-      const existing = this.recordsDb.get(name);
-      return !existing || !existing.timeline || existing.timeline.length === 0;
-    });
-
-    const skippedCount = inputNames.length - targetNames.length;
-    if (targetNames.length === 0) {
-      return this.setStatus(`[${currentSeasonName}] 입력한 ${inputNames.length}명 모두 이미 DB와 타임라인이 존재합니다.`);
-    }
-
-    let successCount = 0;
-    for (let i = 0; i < targetNames.length; i++) {
-      const name = targetNames[i];
-      this.setStatus(`[${currentSeasonName}] 진행 중 (${i + 1}/${targetNames.length}): ${name} 확인 중...`);
-      try {
-        await this.searchSingleCharacterByName(name, false);
-        successCount++;
-      } catch (err) {
-        console.warn(`[${name}] 조회 실패:`, err.message);
-      }
-      await Utils.sleep(700);
-    }
-
-    await this.saveRecordsToDisk();
-    this.refreshAllSeasonViews();
-    this.renderFilteredCharacters();
-    this.initDamageCalculatorPresets();
-    this.setStatus(`[${currentSeasonName}] 일괄 조회 완료! (성공: ${successCount}/${targetNames.length}명, 패스: ${skippedCount}명)`);
-  }
-
-  async searchSingleCharacterByName(charName, updateTable = true) {
-    const { ocid } = await this.api.getOcid(charName);
-    const replayRes = await this.api.getBattlePracticeReplayIds(ocid);
-    const replayList = replayRes.replay_list || [];
-    if (replayList.length === 0) throw new Error(`연무장 기록 없음`);
-
-    const latestReplayObj = replayList[0];
-    const latestReplayId = latestReplayObj.replay_id;
-
-    const [resultData, charInfoData, basicInfoData, timelineData, hexaData] = await Promise.all([
-      this.api.getBattlePracticeResult(latestReplayId),
-      this.api.getBattlePracticeCharacterInfo(latestReplayId),
-      this.api.getCharacterBasic(ocid).catch(() => ({})),
-      this.api.getBattlePracticeSkillTimelineAll(latestReplayId),
-      updateTable ? this.api.getCharacterHexaMatrix(ocid).catch(() => null) : Promise.resolve(null)
-    ]);
-
-    const basicObj = charInfoData.basic_object || {};
-    const job = basicObj.character_class || basicInfoData.character_class || '미분류';
-    const level = basicObj.character_level || basicInfoData.character_level || 0;
-    const dps = Number(resultData.total_dps || 0);
-
-    let combatPower = 0;
-    const cpStat = (charInfoData.stat_object?.basic_stat_object?.final_stat || []).find(s => s.stat_name === '전투력');
-    if (cpStat) combatPower = Number(cpStat.stat_value) || 0;
-
-    const efficiency = combatPower > 0 ? Math.round(dps / combatPower) : 0;
-    const skills = (resultData.skill_statistic || []).map(s => ({
-      name: s.skill_name,
-      rate: Number(s.damage_percent || 0),
-      useCount: Number(s.use_count || 0)
-    })).sort((a, b) => b.rate - a.rate);
-
-    const recordDate = latestReplayObj.register_date || latestReplayObj.date || resultData.register_date || new Date().toISOString();
-    const { combatFragments } = Utils.calculateHexaFragmentsFromApi(hexaData);
-    const existingRec = this.recordsDb.get(charName) || {};
-
-    const recordObj = {
-      replayId: latestReplayId,
-      charName,
-      job,
-      level,
-      dps,
-      combatPower,
-      efficiency,
-      usedFragments: combatFragments || existingRec.usedFragments || 0,
-      recordDate,
-      collectedAt: new Date().toISOString(),
-      skills,
-      timeline: timelineData || []
-    };
-
-    this.recordsDb.set(charName, recordObj);
-
-    if (updateTable) {
-      await this.saveRecordsToDisk();
-      this.refreshAllSeasonViews();
-      this.renderFilteredCharacters();
-      this.initDamageCalculatorPresets();
-      this.renderDetailView(recordObj);
-      const sName = this.seasonsDb.get(this.currentSeasonKey)?.name || '현재 기수';
-      this.setStatus(`[${sName}] '${charName}' (${job}) 연무장 데이터 및 30초 극딜 비중 갱신 완료!`);
-    }
-  }
-
-  renderDetailView(rec) {
-    if (!rec) return;
-    const isSameCharacter = this.currentSelectedRecord && this.currentSelectedRecord.charName === rec.charName;
-    this.currentSelectedRecord = rec;
-    this.switchRightMode('detail');
-
-    if (this.cardCharJob) this.cardCharJob.textContent = `${rec.charName} (${rec.job} Lv.${rec.level})`;
-    if (this.cardDps) this.cardDps.textContent = Utils.formatKoreanNumber(rec.dps);
-    if (this.cardCombatPower) this.cardCombatPower.textContent = rec.combatPower > 0 ? Utils.formatKoreanNumber(rec.combatPower) : '-';
-    if (this.cardEfficiency) this.cardEfficiency.textContent = rec.efficiency > 0 ? rec.efficiency.toLocaleString() : '-';
-    if (this.detailRecordDateInfo) {
-      const sName = this.seasonsDb.get(this.currentSeasonKey)?.name || '';
-      this.detailRecordDateInfo.textContent = `${sName} | 기록일: ${Utils.formatShortDate(rec.recordDate || rec.collectedAt)}`;
-    }
-
-    if (!isSameCharacter) {
-      const restored = this.restoreSavedBurstSkillsForJob(rec.job);
-      if (!restored) this.selectedSkills.clear();
-      this.selectedBurstRound = 'ALL';
-    }
-
-    if (rec.combatPower > 0 && this.calcCharCpManInput) {
-      this.calcCharCpManInput.value = Math.round(rec.combatPower / 10000);
-    }
-    if (rec.usedFragments > 0 && this.calcQ3Input) {
-      this.calcQ3Input.value = rec.usedFragments;
-    }
-
-    const aliases = JOB_NAME_ALIASES[rec.job] || [rec.job];
-    const matchedCalcJob = aliases.find(k => HEXA_FRAGMENT_TABLE[k]) || rec.job;
-    if (this.calcJobPresetSelect && HEXA_FRAGMENT_TABLE[matchedCalcJob]) {
-      this.calcJobPresetSelect.value = matchedCalcJob;
-      this.syncCalculatorWithJobAndBp(matchedCalcJob);
-    } else {
-      this.recalculateDamageEstimator();
-    }
-
-    this.setupRightExtensionPanel(rec);
-    this.renderDetailSkillsTable(rec);
-    this.buildTimelineSkillCheckboxes(rec);
-    this.renderTimelineSection(rec);
-    this.renderBurstSkillSaveBanners();
-  }
-
-  setupRightExtensionPanel(rec) {
-    if (!rec) return;
-    if (this.extTargetCharLabel) {
-      this.extTargetCharLabel.textContent = `대상: ${rec.charName} (${rec.job} Lv.${rec.level})`;
-    }
-
-    const { timelineCountMap, timelineEventsBySkill, buffSkillSet, categoryMap } = this.classifySkillsOfRecord(rec);
-
-    const buffList = Array.from(buffSkillSet)
-      .filter(name => timelineCountMap.has(name))
-      .map(name => ({
-        name,
-        category: categoryMap.get(name) || '버프',
-        rawCount: timelineCountMap.get(name) || 0,
-        events: timelineEventsBySkill.get(name) || []
-      }));
-
-    buffList.sort((a, b) => {
-      const aIsSeed = a.category === '시드링' ? -1 : 0;
-      const bIsSeed = b.category === '시드링' ? -1 : 0;
-      if (aIsSeed !== bIsSeed) return aIsSeed - bIsSeed;
-      return a.rawCount - b.rawCount || a.name.localeCompare(b.name);
-    });
-
-    if (this.buffCountBadge) this.buffCountBadge.textContent = `${buffList.length}개 ▼`;
-
-    const allTimelineSkills = Array.from(timelineCountMap.keys()).sort();
-    if (this.burstTriggerSkillSelect) {
-      const buffOpts = buffList.map(b => `<option value="${b.name}">${b.category === '시드링' ? '💍' : '🛡️'} ${b.name} (${b.rawCount}회)</option>`).join('');
-      const otherOpts = allTimelineSkills
-        .filter(s => !buffSkillSet.has(s))
-        .map(s => `<option value="${s}">⚔️ ${s} (${timelineCountMap.get(s)}회)</option>`)
-        .join('');
-
-      this.burstTriggerSkillSelect.innerHTML =
-        `<optgroup label="분리된 시드링 / 버프">${buffOpts || '<option disabled>버프 없음</option>'}</optgroup>` +
-        `<optgroup label="공격 / 소환 / 설치 스킬">${otherOpts}</optgroup>`;
-
-      if (!this.currentBurstTriggerSkill || !timelineCountMap.has(this.currentBurstTriggerSkill)) {
-        const restraint = buffList.find(b => b.name.includes('리스트레인트') || b.category === '시드링');
-        if (restraint) this.currentBurstTriggerSkill = restraint.name;
-        else if (buffList.length > 0) this.currentBurstTriggerSkill = buffList[0].name;
-        else if (allTimelineSkills.length > 0) this.currentBurstTriggerSkill = allTimelineSkills[0];
-        else this.currentBurstTriggerSkill = '';
-      }
-      this.burstTriggerSkillSelect.value = this.currentBurstTriggerSkill;
-    }
-
-    if (this.separatedBuffListContainer) {
-      if (buffList.length === 0) {
-        this.separatedBuffListContainer.innerHTML = `<div class="empty-msg" style="padding: 8px; font-size: 11px;">분리된 버프/시드링 스킬이 없습니다.</div>`;
-      } else {
-        this.separatedBuffListContainer.innerHTML = buffList.map(b => {
-          const isActive = b.name === this.currentBurstTriggerSkill;
-          return `
-            <div class="buff-pill ${isActive ? 'active-trigger' : ''}" data-buff="${b.name}">
-              <span>${b.category === '시드링' ? '💍' : '🛡️'} ${b.name} (${b.rawCount}회)</span>
-              <button type="button" class="pill-reclassify-btn" data-reclass="${b.name}">⚔️공격전환</button>
-            </div>
-          `;
-        }).join('');
-
-        this.separatedBuffListContainer.querySelectorAll('.buff-pill').forEach(pill => {
-          pill.addEventListener('click', (e) => {
-            if (e.target.classList.contains('pill-reclassify-btn')) return;
-            this.currentBurstTriggerSkill = pill.dataset.buff;
-            this.selectedBurstRound = 'ALL';
-            if (this.burstTriggerSkillSelect) this.burstTriggerSkillSelect.value = this.currentBurstTriggerSkill;
-            this.highlightActiveBuffPill();
-            this.renderDetailSkillsTable(rec);
-            this.renderBurstWindowAnalysis(rec, true);
-          });
-        });
-
-        this.separatedBuffListContainer.querySelectorAll('.pill-reclassify-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.setManualSkillCategory(btn.dataset.reclass, '공격');
-          });
-        });
-      }
-    }
-
-    this.renderSkillClassifierTable(rec);
-    this.renderBurstWindowAnalysis(rec, true);
-  }
-
-  renderSkillClassifierTable(rec) {
-    if (!this.skillClassifierTableBody || !rec) return;
-    const { damageRateMap, timelineCountMap, categoryMap, allSkillNames } = this.classifySkillsOfRecord(rec);
-    const filterCat = this.skillDbCategoryFilter ? this.skillDbCategoryFilter.value : 'ALL';
-
-    const list = Array.from(allSkillNames).map(sName => {
-      const cat = categoryMap.get(sName) || '공격';
-      const dbEntry = this.skillClassificationDb[sName] || {};
-      const meta = (rec.skillMeta && rec.skillMeta[sName]) || dbEntry;
-      return {
-        name: sName,
-        category: cat,
-        manual: Boolean(dbEntry.manual),
-        grade: meta.grade || '-',
-        dmgRate: damageRateMap.get(sName) || 0,
-        useCount: timelineCountMap.get(sName) || 0
-      };
-    });
-
-    if (this.skillDbCountBadge) this.skillDbCountBadge.textContent = `총 ${list.length}개 스킬 ▼`;
-    const filtered = filterCat === 'ALL' ? list : list.filter(item => item.category === filterCat);
-    filtered.sort((a, b) => b.dmgRate - a.dmgRate || b.useCount - a.useCount);
-
-    if (filtered.length === 0) {
-      this.skillClassifierTableBody.innerHTML = `<tr><td colspan="3" class="empty-msg">해당 분류의 스킬이 없습니다.</td></tr>`;
-      return;
-    }
-
-    const categories = ['공격', '버프', '시드링', '소환', '설치'];
-    this.skillClassifierTableBody.innerHTML = filtered.map(item => `
-      <tr>
-        <td>
-          <strong>${item.name}</strong>
-          <span style="font-size: 10px; color: #a0aec0; margin-left: 4px;">(${item.dmgRate}% / ${item.useCount}회)</span>
-          ${item.manual ? '<span style="color:#f6ad55; font-size:9px; margin-left:4px;">[수동]</span>' : ''}
-        </td>
-        <td style="color: #cbd5e0;">${item.grade}</td>
-        <td>
-          <select class="skill-cat-select" data-skill="${item.name}" style="font-size: 11px; padding: 2px 4px; width: 100%; background: #141821; color: #fff; border: 1px solid #4a5568; border-radius: 4px;">
-            ${categories.map(c => `<option value="${c}" ${item.category === c ? 'selected' : ''}>${c}</option>`).join('')}
-          </select>
-        </td>
-      </tr>
-    `).join('');
-
-    this.skillClassifierTableBody.querySelectorAll('.skill-cat-select').forEach(sel => {
-      sel.addEventListener('change', (e) => this.setManualSkillCategory(sel.dataset.skill, e.target.value));
-    });
-  }
-
-  highlightActiveBuffPill() {
-    if (!this.separatedBuffListContainer) return;
-    this.separatedBuffListContainer.querySelectorAll('.buff-pill').forEach(pill => {
-      pill.classList.toggle('active-trigger', pill.dataset.buff === this.currentBurstTriggerSkill);
-    });
-  }
-
-  renderBurstWindowAnalysis(rec, rebuildRoundDropdown = false) {
-    if (!this.burstWindowsAccordionContainer || !this.burstSummaryContainer || !rec) return;
-    const evalRes = this.evaluateBurstAttributionFormula(rec, this.currentBurstTriggerSkill, this.burstWindowSeconds);
-    this.renderBurstSkillSaveBanners();
-
-    if (evalRes.skillBreakdown.size === 0) {
-      this.burstSummaryContainer.innerHTML = '';
-      this.burstWindowsAccordionContainer.innerHTML = `<div class="empty-msg" style="padding: 14px; text-align: center;">분석할 스킬 데이터가 없습니다.</div>`;
-      return;
-    }
-
-    const activeCutoff = Number(this.burstCutoffInput?.value) || 50.0;
-    const isBurstClass = evalRes.totalBurstShare >= activeCutoff;
-    const roleVerdictBadge = isBurstClass
-      ? `<span style="color:#fc8181; font-weight:bold;">[🔥극딜 직업 (≥${activeCutoff}%)]</span>`
-      : `<span style="color:#63b3ed; font-weight:bold;">[🔄평딜 직업 (&lt;${activeCutoff}%)]</span>`;
-
-    const omegaModeBadge = evalRes.isBuffCentricClass
-      ? `<span style="color:#fbd38d;" title="순수 극딜기 합계(${evalRes.pureActiveBurstSum}%)가 25% 미만으로 판별되어 주력기/사출기에 상향 배율 적용">⚡버프형 5차 보정(순수극딜합 ${evalRes.pureActiveBurstSum}% &lt; 25%)</span>`
-      : `<span style="color:#a0aec0;">일반 극딜 구조(순수극딜합 ${evalRes.pureActiveBurstSum}% ≥ 25%)</span>`;
-
-    this.burstSummaryContainer.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; background: #141821; border: 1px solid #2d3748; padding: 7px 10px; border-radius: 6px; font-size: 11px;">
-        <div>
-          <span>🔥 기준: <strong>${evalRes.triggerName}</strong> ([-3초~+${this.burstWindowSeconds - 3}초] × ${evalRes.windows.length}회)</span>
-          <span style="margin-left: 8px;">${omegaModeBadge}</span>
-        </div>
-        <div>
-          <span>최종 30초 극딜 귀속 비중: <strong style="color:#f6ad55; font-size:13px;">${evalRes.totalBurstShare}%</strong> ${roleVerdictBadge}</span>
-        </div>
-      </div>
-    `;
-
-    if (this.burstRoundSelect && rebuildRoundDropdown) {
-      const roundOpts = evalRes.windows.map(w =>
-        `<option value="${w.round}">${w.round}회차 극딜 구간 (${w.startSecStr}초 ~ ${w.endSecStr}초)</option>`
-      ).join('');
-      this.burstRoundSelect.innerHTML =
-        `<option value="ALL">🔥 전체 주기 합산 (30초 극딜 공식 표준)</option>` + roundOpts;
-      this.burstRoundSelect.value = this.selectedBurstRound;
-    }
-
-    const activeSelected = this.selectedSkills;
-
-    if (this.selectedBurstRound === 'ALL') {
-      const list = Array.from(evalRes.skillBreakdown.values()).sort((a, b) => b.D_i_30 - a.D_i_30);
-      let selectedBurstSum = 0;
-      list.forEach(item => {
-        if (activeSelected.has(item.name)) selectedBurstSum += item.D_i_30;
-      });
-      selectedBurstSum = Number(selectedBurstSum.toFixed(1));
-
-      const chartValue = activeSelected.size > 0 ? selectedBurstSum : evalRes.totalBurstShare;
-      const clamped = Math.min(100, Math.max(0, chartValue));
-      const donutSvg = `<circle cx="21" cy="21" r="15.9155" fill="transparent" stroke="${chartValue >= activeCutoff ? '#e53e3e' : '#3182ce'}" stroke-width="4" stroke-dasharray="${clamped} ${100 - clamped}" stroke-dashoffset="100" />`;
-
-      this.burstWindowsAccordionContainer.innerHTML = `
-        <div class="timeline-accordion-item open">
-          <div class="timeline-accordion-header" onclick="this.parentElement.classList.toggle('open')">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <div class="donut-chart-wrap" style="width: 36px; height: 36px; position: relative;">
-                <svg viewBox="0 0 42 42" style="width: 36px; height: 36px; transform: rotate(-90deg);">
-                  <circle cx="21" cy="21" r="15.9155" fill="transparent" stroke="#2d3748" stroke-width="4"></circle>
-                  ${donutSvg}
-                </svg>
-                <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold; color: #fff;">
-                  ${Math.round(chartValue)}%
-                </div>
-              </div>
-              <div>
-                <span style="font-weight: bold; color: #fff; font-size: 12px;">🎯 스킬별 30초 극딜 귀속량 상세 내역</span>
-                <span class="sub-info" style="display: block; font-size: 11px; color: #63b3ed;">
-                  ${activeSelected.size > 0 ? `선택 스킬(${activeSelected.size}개) 극딜 귀속 합계: ${selectedBurstSum}%` : `전체 스킬 30초 극딜 귀속 합계: ${evalRes.totalBurstShare}%`}
-                </span>
-              </div>
-            </div>
-            <span class="sub-info" style="font-size: 11px;">총 ${list.length}개 딜 스킬 ▼</span>
-          </div>
-          <div class="timeline-accordion-body">
-            <table class="data-table ext-table">
-              <thead>
-                <tr>
-                  <th>스킬명 (클릭 시 선택)</th>
-                  <th>전체 점유율</th>
-                  <th>시전(극딜30초 / 평딜90초)</th>
-                  <th>버프 배율</th>
-                  <th>30초 극딜 귀속량</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${list.map(item => {
-                  const isHighlighted = activeSelected.has(item.name);
-                  const castText = item.formulaType === 'passive_time'
-                    ? `<span style="color:#a0aec0;">시간비례(30:90)</span>`
-                    : `<strong>${item.n30}회</strong> / ${item.n90}회`;
-                  return `
-                    <tr class="skill-selectable-row ${isHighlighted ? 'selected-skill-row' : ''}" data-skill="${item.name}">
-                      <td style="font-size: 12px;"><strong>${item.name}</strong></td>
-                      <td style="color:#cbd5e0;">${item.D_i}%</td>
-                      <td style="font-size: 11px;">${castText}</td>
-                      <td style="color:${item.omega > 2.0 ? '#fbd38d' : '#63b3ed'}; font-weight:bold;">×${item.omega}</td>
-                      <td><strong style="color:#4fd1c5; font-size:12px;">${item.D_i_30}%</strong></td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `;
-    } else {
-      const targetW = evalRes.windows.find(w => w.round === String(this.selectedBurstRound)) || evalRes.windows[0];
-      const timelines = rec.timeline || [];
-      const { buffSkillSet } = this.classifySkillsOfRecord(rec);
-      const events = timelines.filter(t => {
-        const ms = Number(t?.elapse_time) || 0;
-        return ms >= targetW.startMs && ms <= targetW.endMs && !buffSkillSet.has(t?.skill_name);
-      });
-
-      const cntMap = new Map();
-      events.forEach(e => cntMap.set(e.skill_name, (cntMap.get(e.skill_name) || 0) + 1));
-      const skillList = Array.from(cntMap.entries()).map(([name, count]) => ({
-        name,
-        count,
-        rate: events.length > 0 ? Number(((count / events.length) * 100).toFixed(1)) : 0,
-        D_i_30: evalRes.skillBreakdown.get(name)?.D_i_30 || 0
-      })).sort((a, b) => b.count - a.count);
-
-      this.burstWindowsAccordionContainer.innerHTML = `
-        <div class="timeline-accordion-item open">
-          <div class="timeline-accordion-header" onclick="this.parentElement.classList.toggle('open')">
-            <span style="font-weight: bold; color: #fff; font-size: 12px;">🎯 ${targetW.round}회차 극딜 구간 (${targetW.startSecStr}초 ~ ${targetW.endSecStr}초)</span>
-            <span class="sub-info" style="font-size: 11px;">총 ${events.length}회 시전 ▼</span>
-          </div>
-          <div class="timeline-accordion-body">
-            <table class="data-table ext-table">
-              <thead>
-                <tr>
-                  <th>스킬명</th>
-                  <th>회차 내 시전 비중</th>
-                  <th>시전 횟수</th>
-                  <th>전체 30초 극딜 귀속량</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${skillList.map(s => {
-                  const isHighlighted = activeSelected.has(s.name);
-                  return `
-                    <tr class="skill-selectable-row ${isHighlighted ? 'selected-skill-row' : ''}" data-skill="${s.name}">
-                      <td><strong>${s.name}</strong></td>
-                      <td>${s.rate}%</td>
-                      <td><strong>${s.count}회</strong></td>
-                      <td style="color:#4fd1c5; font-weight:bold;">${s.D_i_30}%</td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `;
-    }
-
-    this.burstWindowsAccordionContainer.querySelectorAll('.skill-selectable-row').forEach(row => {
-      row.addEventListener('click', () => this.toggleSkillSelection(row.dataset.skill));
-    });
-  }
-
-  renderDetailSkillsTable(rec) {
-    if (!this.bpSkillTableBody || !rec) return;
-    if (!rec.skills || rec.skills.length === 0) {
-      this.bpSkillTableBody.innerHTML = `<tr><td colspan="6" class="empty-msg">스킬 통계 데이터가 없습니다.</td></tr>`;
-      return;
-    }
-
-    const evalRes = this.evaluateBurstAttributionFormula(rec, this.currentBurstTriggerSkill, this.burstWindowSeconds);
-    const sortedSkills = [...rec.skills];
-
-    this.bpSkillTableBody.innerHTML = sortedSkills.map(s => {
-      const isSelected = this.selectedSkills.has(s.name);
-      const cat = this.getSkillCategory(s.name, rec);
-      const bItem = evalRes.skillBreakdown.get(s.name);
-      const castInfo = bItem
-        ? (bItem.formulaType === 'passive_time' ? '시간비례(30:90)' : `${bItem.n30}회 / ${bItem.n90}회`)
-        : '-';
-      const omegaInfo = bItem ? `×${bItem.omega}` : '-';
-      const d30Info = bItem ? `${bItem.D_i_30}%` : '-';
-
-      return `
-        <tr class="skill-selectable-row ${isSelected ? 'selected-skill-row' : ''}" data-skill="${s.name}">
-          <td>
-            <strong>${s.name}</strong>
-            ${isSelected ? '<span style="color: #63b3ed; font-size: 11px; margin-left: 6px;">(선택됨)</span>' : ''}
-          </td>
-          <td><span class="cat-badge cat-${cat}">${cat}</span></td>
-          <td style="font-size: 11px; color: #cbd5e0;">${castInfo}</td>
-          <td style="font-size: 11px; color: #fbd38d; font-weight: bold;">${omegaInfo}</td>
-          <td>
-            <div class="rate-bar-wrap">
-              <div class="rate-bar-bg">
-                <div class="rate-bar-fill" style="width: ${Math.min(100, Math.max(0, s.rate))}%"></div>
-              </div>
-              <span class="rate-text">${s.rate}%</span>
-            </div>
-          </td>
-          <td><strong style="color: #4fd1c5;">${d30Info}</strong> <span style="font-size:10px; color:#a0aec0;">(${s.useCount.toLocaleString()}회)</span></td>
-        </tr>
-      `;
-    }).join('');
-
-    this.bpSkillTableBody.querySelectorAll('.skill-selectable-row').forEach(row => {
-      row.addEventListener('click', () => this.toggleSkillSelection(row.dataset.skill));
-    });
-  }
-
-  buildTimelineSkillCheckboxes(rec) {
-    if (!this.timelineSkillDropdownContent || !this.timelineSkillDropdownBtn || !rec) return;
-    const skillSet = new Set();
-    (rec.timeline || []).forEach(t => { if (t && t.skill_name) skillSet.add(t.skill_name); });
-    (rec.skills || []).forEach(s => { if (s && s.name) skillSet.add(s.name); });
-    const uniqueSkills = Array.from(skillSet).sort();
-
-    this.timelineSkillDropdownContent.innerHTML = `
-      <div style="padding: 6px 10px; border-bottom: 1px solid #2d3748; display: flex; justify-content: space-between; font-size: 11px;">
-        <span id="selectAllSkills" style="color: #63b3ed; cursor: pointer;">전체 선택</span>
-        <span id="clearAllSkills" style="color: #a0aec0; cursor: pointer;">선택 해제</span>
-      </div>
-      <div style="max-height: 200px; overflow-y: auto; padding: 4px 0;">
-        ${uniqueSkills.map(sName => `
-          <label style="display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; font-size: 12px; color: #e2e8f0;">
-            <input type="checkbox" class="skill-checkbox" value="${sName}" ${this.selectedSkills.has(sName) ? 'checked' : ''}>
-            <span>${sName}</span>
-          </label>
-        `).join('')}
-      </div>
-    `;
-
-    this.timelineSkillDropdownContent.querySelectorAll('.skill-checkbox').forEach(chk => {
-      chk.addEventListener('change', (e) => {
-        if (e.target.checked) this.selectedSkills.add(e.target.value);
-        else this.selectedSkills.delete(e.target.value);
-        this.customBurstRateInputVal = null;
-        this.updateDropdownButtonLabel();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderTimelineSection(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord);
-        }
-        this.renderBurstSkillSaveBanners();
-      });
-    });
-
-    const selAllBtn = this.timelineSkillDropdownContent.querySelector('#selectAllSkills');
-    if (selAllBtn) {
-      selAllBtn.addEventListener('click', () => {
-        uniqueSkills.forEach(s => this.selectedSkills.add(s));
-        this.customBurstRateInputVal = null;
-        this.timelineSkillDropdownContent.querySelectorAll('.skill-checkbox').forEach(c => c.checked = true);
-        this.updateDropdownButtonLabel();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderTimelineSection(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord);
-        }
-        this.renderBurstSkillSaveBanners();
-      });
-    }
-
-    const clrAllBtn = this.timelineSkillDropdownContent.querySelector('#clearAllSkills');
-    if (clrAllBtn) {
-      clrAllBtn.addEventListener('click', () => {
-        this.selectedSkills.clear();
-        this.customBurstRateInputVal = null;
-        this.timelineSkillDropdownContent.querySelectorAll('.skill-checkbox').forEach(c => c.checked = false);
-        this.updateDropdownButtonLabel();
-        if (this.currentSelectedRecord) {
-          this.renderDetailSkillsTable(this.currentSelectedRecord);
-          this.renderTimelineSection(this.currentSelectedRecord);
-          this.renderBurstWindowAnalysis(this.currentSelectedRecord);
-        }
-        this.renderBurstSkillSaveBanners();
-      });
-    }
-
-    this.updateDropdownButtonLabel();
-  }
-
-  updateDropdownButtonLabel() {
-    if (!this.timelineSkillDropdownBtn) return;
-    if (this.selectedSkills.size === 0) {
-      this.timelineSkillDropdownBtn.textContent = '전체 스킬 (선택 없음)';
-    } else {
-      const first = Array.from(this.selectedSkills)[0];
-      this.timelineSkillDropdownBtn.textContent = this.selectedSkills.size === 1
-        ? first
-        : `${first} 외 ${this.selectedSkills.size - 1}개`;
-    }
-  }
-
-  buildTimelineBucketsHtml(timelines, intervalSec, divisorCount = 1, isAverageMode = false) {
-    const intervalMs = intervalSec * 1000;
-    const maxTimeSec = 360;
-    const totalBuckets = Math.ceil(maxTimeSec / intervalSec);
-
-    const buckets = new Map();
-    for (let i = 0; i < totalBuckets; i++) {
-      const startTime = i * intervalSec;
-      const endTime = Math.min((i + 1) * intervalSec, maxTimeSec);
-      buckets.set(`${startTime}-${endTime}`, { startTime, endTime, totalCount: 0, skillCounts: new Map() });
-    }
-
-    timelines.forEach(t => {
-      if (!t) return;
-      const rawMs = Number(t.elapse_time) || 0;
-      const clampedMs = Math.min(rawMs, maxTimeSec * 1000 - 1);
-      const bucketIndex = Math.max(0, Math.floor(clampedMs / intervalMs));
-      const startTime = bucketIndex * intervalSec;
-      const endTime = Math.min((bucketIndex + 1) * intervalSec, maxTimeSec);
-      const bucketKey = `${startTime}-${endTime}`;
-      const bucket = buckets.get(bucketKey);
-      if (bucket) {
-        bucket.totalCount++;
-        const sName = t.skill_name || '미분류 스킬';
-        bucket.skillCounts.set(sName, (bucket.skillCounts.get(sName) || 0) + 1);
+      this.inlineSimCpInput,
+      this.inlineSimFragInput,
+      this.inlineSimHatSelect,
+      this.inlineSimIframeSelect,
+      this.inlineSimBossHpInput,
+      this.inlineSimSortSelect
+    ].forEach(el => {
+      if (el) {
+        el.addEventListener('input', () => this.renderAll());
+        el.addEventListener('change', () => this.renderAll());
       }
     });
-
-    const sortedBuckets = Array.from(buckets.values()).filter(b => b.totalCount > 0).sort((a, b) => a.startTime - b.startTime);
-    const activeSelected = this.selectedSkills;
-
-    return sortedBuckets.map((b) => {
-      const avgTotalCount = isAverageMode ? Number((b.totalCount / divisorCount).toFixed(1)) : b.totalCount;
-      const skillList = Array.from(b.skillCounts.entries())
-        .map(([name, rawCount]) => ({
-          name,
-          count: isAverageMode ? Number((rawCount / divisorCount).toFixed(1)) : rawCount,
-          rate: Number(((rawCount / b.totalCount) * 100).toFixed(1))
-        }))
-        .sort((a, b) => b.count - a.count);
-
-      let combinedRate = 0, combinedCount = 0;
-      if (activeSelected.size > 0) {
-        skillList.forEach(s => {
-          if (activeSelected.has(s.name)) {
-            combinedRate += s.rate;
-            combinedCount += s.count;
-          }
-        });
-        combinedRate = Number(combinedRate.toFixed(1));
-        combinedCount = isAverageMode ? Number(combinedCount.toFixed(1)) : combinedCount;
-      } else {
-        combinedRate = skillList.length > 0 ? skillList[0].rate : 0;
-      }
-
-      const topSkillName = skillList.length > 0 ? skillList[0].name : '-';
-      const topSkillRate = skillList.length > 0 ? skillList[0].rate : 0;
-      const headerSubText = activeSelected.size > 0
-        ? `선택 스킬 합산: ${combinedRate}% (${isAverageMode ? '평균 ' : ''}${combinedCount}회)`
-        : `1위: ${topSkillName} (${topSkillRate}%)`;
-
-      const clampedRate = Math.min(100, Math.max(0, activeSelected.size > 0 ? combinedRate : topSkillRate));
-      const donutSegments = `<circle cx="21" cy="21" r="15.9155" fill="transparent" stroke="#3182ce" stroke-width="4" stroke-dasharray="${clampedRate} ${100 - clampedRate}" stroke-dashoffset="100" />`;
-
-      return `
-        <div class="timeline-accordion-item open">
-          <div class="timeline-accordion-header" onclick="this.parentElement.classList.toggle('open')">
-            <div style="display: flex; align-items: center; gap: 12px;">
-              <div class="donut-chart-wrap" style="width: 38px; height: 38px; position: relative;">
-                <svg viewBox="0 0 42 42" style="width: 38px; height: 38px; transform: rotate(-90deg);">
-                  <circle cx="21" cy="21" r="15.9155" fill="transparent" stroke="#2d3748" stroke-width="4"></circle>
-                  ${donutSegments}
-                </svg>
-                <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold; color: #fff;">
-                  ${Math.round(clampedRate)}%
-                </div>
-              </div>
-              <div>
-                <span style="font-weight: bold; color: #fff;">⏱️ ${b.startTime}초 - ${b.endTime}초 구간</span>
-                <span class="sub-info" style="display: block; font-size: 11px; color: ${activeSelected.size > 0 ? '#63b3ed' : '#a0aec0'};">${headerSubText}</span>
-              </div>
-            </div>
-            <span class="sub-info">${isAverageMode ? `평균 ${avgTotalCount}회 입력` : `총 ${avgTotalCount}회 입력`} ▼</span>
-          </div>
-          <div class="timeline-accordion-body">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>스킬명 (클릭 시 선택/해제)</th>
-                  <th style="width: 200px;">구간 점유율 (%)</th>
-                  <th>${isAverageMode ? '평균 사용 횟수' : '사용 횟수'}</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${skillList.map(s => {
-                  const isHighlighted = activeSelected.has(s.name);
-                  return `
-                    <tr class="skill-selectable-row ${isHighlighted ? 'selected-skill-row' : ''}" data-skill="${s.name}">
-                      <td><strong>${s.name}</strong> ${isHighlighted ? '<span style="color: #63b3ed; font-size: 11px;">(선택됨)</span>' : ''}</td>
-                      <td>
-                        <div class="rate-bar-wrap">
-                          <div class="rate-bar-bg"><div class="rate-bar-fill" style="width: ${Math.min(100, Math.max(0, s.rate))}%"></div></div>
-                          <span class="rate-text">${s.rate}%</span>
-                        </div>
-                      </td>
-                      <td><strong>${s.count}회</strong></td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  renderTimelineSection(rec) {
-    if (!this.timelineAccordionContainer || !rec) return;
-    let timelines = rec.timeline || [];
-    if (timelines.length === 0) {
-      this.timelineAccordionContainer.innerHTML = `<div class="empty-msg" style="padding: 20px; text-align: center;">이 기록에는 스킬 타임라인 데이터가 없습니다.</div>`;
-      return;
-    }
-
-    if (this.hideBuffsInMainTimeline) {
-      const { buffSkillSet } = this.classifySkillsOfRecord(rec);
-      timelines = timelines.filter(t => t && !buffSkillSet.has(t.skill_name));
-    }
-
-    this.timelineAccordionContainer.innerHTML = this.buildTimelineBucketsHtml(timelines, this.currentTimelineInterval, 1, false);
-    this.timelineAccordionContainer.querySelectorAll('.skill-selectable-row').forEach(row => {
-      row.addEventListener('click', () => this.toggleSkillSelection(row.dataset.skill));
-    });
-  }
-
-  updateJobFilterDropdown() {
-    if (!this.rankJobFilter) return;
-    const allRecs = Array.from(this.recordsDb.values());
-    const jobs = Array.from(new Set(allRecs.map(r => r?.job))).filter(Boolean).sort();
-    const curVal = this.rankJobFilter.value;
-    this.rankJobFilter.innerHTML = `<option value="ALL">전체 직업 보기</option>` + jobs.map(j => `<option value="${j}">${j}</option>`).join('');
-    this.rankJobFilter.value = jobs.includes(curVal) ? curVal : 'ALL';
-  }
-
-  updateAllRecordsTable() {
-    let allRecs = Array.from(this.recordsDb.values()).filter(Boolean);
-    const selectedJob = this.rankJobFilter ? this.rankJobFilter.value : 'ALL';
-    if (selectedJob !== 'ALL') allRecs = allRecs.filter(r => Utils.isSameJob(r.job, selectedJob));
-
-    if (!this.allRecordsBody) return;
-    if (allRecs.length === 0) {
-      this.allRecordsBody.innerHTML = `<tr><td colspan="7" class="empty-msg">선택한 직업(${selectedJob})의 조회된 개별 기록이 없습니다.</td></tr>`;
-      return;
-    }
-    allRecs.sort((a, b) => b.dps - a.dps);
-    this.allRecordsBody.innerHTML = allRecs.map((r, idx) => `
-      <tr class="clickable-row" data-replay="${r.replayId}">
-        <td><strong>${idx + 1}</strong></td>
-        <td><strong>${r.charName}</strong></td>
-        <td>${r.job} (Lv.${r.level})</td>
-        <td class="blue-dps">${Utils.formatKoreanNumber(r.dps)}</td>
-        <td>${r.combatPower > 0 ? Utils.formatKoreanNumber(r.combatPower) : '-'}</td>
-        <td class="orange-eff">${r.efficiency > 0 ? r.efficiency.toLocaleString() : '-'}</td>
-        <td class="sub-info">${Utils.formatShortDate(r.recordDate || r.collectedAt)}</td>
-      </tr>
-    `).join('');
-
-    this.allRecordsBody.querySelectorAll('[data-replay]').forEach(el => {
-      el.addEventListener('click', () => {
-        const rec = Array.from(this.recordsDb.values()).find(r => r && r.replayId === el.dataset.replay);
-        if (rec) this.renderDetailView(rec);
-      });
-    });
-  }
-
-  updateChuchuRankTable() {
-    let allRecs = Array.from(this.recordsDb.values()).filter(Boolean);
-    const selectedJob = this.rankJobFilter ? this.rankJobFilter.value : 'ALL';
-    if (selectedJob !== 'ALL') allRecs = allRecs.filter(r => Utils.isSameJob(r.job, selectedJob));
-
-    if (this.totalRecordBadge) this.totalRecordBadge.textContent = allRecs.length;
-    if (!this.chuchuRankBody) return;
-    if (allRecs.length === 0) {
-      this.chuchuRankBody.innerHTML = `<tr><td colspan="7" class="empty-msg">선택한 직업(${selectedJob})의 연무장 기록이 없습니다.</td></tr>`;
-      return;
-    }
-
-    const jobMap = new Map();
-    allRecs.forEach(r => {
-      const job = r.job || '미분류';
-      if (!jobMap.has(job)) jobMap.set(job, { job, records: [], sumDps: 0, sumCp: 0, sumEff: 0 });
-      const g = jobMap.get(job);
-      g.records.push(r);
-      g.sumDps += r.dps || 0;
-      g.sumCp += r.combatPower || 0;
-      g.sumEff += r.efficiency || 0;
-    });
-
-    const rankList = Array.from(jobMap.values()).map(g => {
-      const cnt = g.records.length;
-      const avgDps = Math.round(g.sumDps / cnt);
-      const avgCp = Math.round(g.sumCp / cnt);
-      const avgEff = avgCp > 0 ? Math.round(avgDps / avgCp) : Math.round(g.sumEff / cnt);
-      g.records.sort((a, b) => b.dps - a.dps);
-      return { job: g.job, avgDps, avgCp, avgEff, count: cnt, bestRecord: g.records[0] };
-    });
-
-    rankList.sort((a, b) => b.avgEff - a.avgEff || b.avgDps - a.avgDps);
-    const activeCutoff = Number(this.burstCutoffInput?.value) || 50.0;
-
-    this.chuchuRankBody.innerHTML = rankList.map((item, idx) => {
-      const aliases = JOB_NAME_ALIASES[item.job] || [item.job];
-      const statKey = aliases.find(k => this.jobBurstStatsCache.has(k)) || item.job;
-      const bStat = this.jobBurstStatsCache.get(statKey);
-      let roleLabel = `<span style="color:#718096; font-size:10px; margin-left:6px;">[미분류]</span>`;
-      if (bStat && bStat.avgBurstRate !== null) {
-        const savedMark = bStat.isManualSaved ? '💾' : (bStat.isBuffCentric ? '⚡' : '');
-        roleLabel = bStat.avgBurstRate >= activeCutoff
-          ? `<span style="color:#fc8181; font-size:10px; margin-left:6px;">[${savedMark}🔥극딜 ${bStat.avgBurstRate}%]</span>`
-          : `<span style="color:#63b3ed; font-size:10px; margin-left:6px;">[${savedMark}🔄평딜 ${bStat.avgBurstRate}%]</span>`;
-      }
-
-      return `
-        <tr class="clickable-row" data-replay="${item.bestRecord.replayId}">
-          <td><strong>${idx + 1}</strong></td>
-          <td><strong>${item.job}</strong>${roleLabel}</td>
-          <td>${item.bestRecord.charName}</td>
-          <td class="blue-dps">${Utils.formatKoreanNumber(item.avgDps)}</td>
-          <td>${item.avgCp > 0 ? Utils.formatKoreanNumber(item.avgCp) : '-'}</td>
-          <td class="orange-eff">${item.avgEff.toLocaleString()}</td>
-          <td>${item.count} 개</td>
-        </tr>
-      `;
-    }).join('');
-
-    this.chuchuRankBody.querySelectorAll('[data-replay]').forEach(el => {
-      el.addEventListener('click', () => {
-        const rec = Array.from(this.recordsDb.values()).find(r => r && r.replayId === el.dataset.replay);
-        if (rec) this.renderDetailView(rec);
-      });
-    });
-  }
-
-  updateTop20SkillsTable() {
-    if (!this.top20SkillsBody) return;
-    let allRecs = Array.from(this.recordsDb.values()).filter(Boolean);
-    const selectedJob = this.rankJobFilter ? this.rankJobFilter.value : 'ALL';
-    if (selectedJob !== 'ALL') allRecs = allRecs.filter(r => Utils.isSameJob(r.job, selectedJob));
-
-    this.renderBurstSkillSaveBanners();
-
-    if (allRecs.length === 0) {
-      this.top20SkillsBody.innerHTML = `<tr><td colspan="4" class="empty-msg">선택한 직업(${selectedJob})의 조회된 기록이 없습니다.</td></tr>`;
-      if (this.top20TimelineAccordionContainer) {
-        this.top20TimelineAccordionContainer.innerHTML = `<div class="empty-msg" style="padding: 20px; text-align: center;">선택한 직업의 타임라인 데이터가 없습니다.</div>`;
-      }
-      return;
-    }
-
-    const skillMap = new Map();
-    allRecs.forEach(r => {
-      (r.skills || []).forEach(s => {
-        if (!s || !s.name) return;
-        if (!skillMap.has(s.name)) skillMap.set(s.name, { name: s.name, sumUse: 0, sumRate: 0, count: 0 });
-        const obj = skillMap.get(s.name);
-        obj.sumUse += s.useCount || 0;
-        obj.sumRate += s.rate || 0;
-        obj.count += 1;
-      });
-    });
-
-    let skillList = Array.from(skillMap.values()).map(s => ({
-      name: s.name,
-      use: Math.round(s.sumUse / s.count),
-      rate: Number((s.sumRate / s.count).toFixed(2))
-    }));
-
-    skillList.sort((a, b) => b[this.top20SortKey] - a[this.top20SortKey]);
-    const top20 = skillList.slice(0, 20);
-
-    this.top20SkillsBody.innerHTML = top20.map((s, idx) => {
-      const isSelected = this.selectedSkills.has(s.name);
-      return `
-        <tr class="skill-selectable-row ${isSelected ? 'selected-skill-row' : ''}" data-skill="${s.name}">
-          <td><strong>${idx + 1}</strong></td>
-          <td><strong>${s.name}</strong> ${isSelected ? '<span style="color: #63b3ed; font-size: 11px;">(선택됨)</span>' : ''}</td>
-          <td>${s.use.toLocaleString()}회</td>
-          <td class="orange-eff">${s.rate}%</td>
-        </tr>
-      `;
-    }).join('');
-
-    this.top20SkillsBody.querySelectorAll('.skill-selectable-row').forEach(row => {
-      row.addEventListener('click', () => this.toggleSkillSelection(row.dataset.skill));
-    });
-
-    if (this.top20TimelineAccordionContainer) {
-      const recordsWithTimeline = allRecs.filter(r => Array.isArray(r.timeline) && r.timeline.length > 0);
-      if (recordsWithTimeline.length === 0) {
-        this.top20TimelineAccordionContainer.innerHTML = `<div class="empty-msg" style="padding: 20px; text-align: center;">수집된 타임라인 데이터가 없습니다.</div>`;
-      } else {
-        const mergedTimelines = [];
-        for (let i = 0; i < recordsWithTimeline.length; i++) {
-          const tl = recordsWithTimeline[i].timeline;
-          for (let j = 0; j < tl.length; j++) {
-            mergedTimelines.push(tl[j]);
-          }
-        }
-        this.top20TimelineAccordionContainer.innerHTML = this.buildTimelineBucketsHtml(
-          mergedTimelines,
-          this.top20TimelineInterval,
-          recordsWithTimeline.length,
-          true
-        );
-        this.top20TimelineAccordionContainer.querySelectorAll('.skill-selectable-row').forEach(row => {
-          row.addEventListener('click', () => this.toggleSkillSelection(row.dataset.skill));
-        });
-      }
-    }
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => { new MapleDashboardApp(); });
+document.addEventListener('DOMContentLoaded', () => {
+  new MapleLabDashboard();
+});
