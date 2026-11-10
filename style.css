@@ -2153,3 +2153,95 @@ tbody tr.selected td:first-child {
     display: none;
   }
 }
+/* ==========================================================================
+   [데이터 업데이트 & 검색 통합 패널 전용 스타일]
+   ========================================================================== */
+.button-update-center {
+  color: #93c5fd;
+  background: rgba(85, 167, 255, 0.14);
+  border: 1px solid rgba(85, 167, 255, 0.45);
+}
+
+.button-update-center:hover, .button-update-center.active-update-btn {
+  color: #ffffff;
+  background: #2563eb;
+  border-color: var(--blue);
+  box-shadow: 0 6px 18px rgba(85, 167, 255, 0.28);
+  font-weight: 700;
+}
+
+.update-job-pills-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  padding: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.update-job-pill {
+  padding: 6px 7px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  cursor: pointer;
+  transition: 120ms ease;
+}
+
+.update-job-pill:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.update-job-pill.selected-update-job {
+  background: rgba(85, 167, 255, 0.16);
+  border-color: var(--blue);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: inset 2px 0 var(--blue);
+}
+
+.update-job-pill small {
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+.update-job-pill.selected-update-job small {
+  color: #93c5fd;
+}
+
+.update-progress-track {
+  width: 100%;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+  transition: width 200ms ease;
+}
+
+.update-log-console {
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1.5;
+  max-height: 130px;
+  overflow-y: auto;
+  font-family: Consolas, "Malgun Gothic", monospace;
+  white-space: pre-wrap;
+}

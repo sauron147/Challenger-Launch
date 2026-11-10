@@ -1,4 +1,8 @@
 const { ipcRenderer } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const jobDbModule = require('./job_utility_db.js');
+
 const {
   HERO_CALIBRATED_FULL_INDEX,
   HERO_BASELINE_DPM_JO,
@@ -11,13 +15,28 @@ const {
   HEXA_FRAGMENT_TABLE,
   MASTER_JOB_LIST,
   DEFAULT_JOB_UTILITY_DB
-} = require('./job_utility_db.js');
+} = jobDbModule;
+
+const MINOR_PATCH_13_JOBS = [
+  '호영',
+  '아크메이지(불,독)',
+  '카이저',
+  '아크',
+  '카인',
+  '블래스터',
+  '은월',
+  '제논',
+  '데몬슬레이어',
+  '윈드브레이커',
+  '나이트워커',
+  '팬텀',
+  '렌'
+];
 
 /**
  * ============================================================================
  * [메이플스토리 공식 연계 직업 8종 고정 DB (STRICT_COMBO_JOBS_DB)]
- * - 질문 6 ("연계직업이 좋은가?")에서 '아니오' 선택 시 아래 8개 직업은
- *   추천 결과 및 시뮬레이터 목록에서 100% 제외(숨김)됩니다.
+ * - 질문 6 ("연계직업이 좋은가?")에서 '아니오' 선택 시 아래 8개 직업만 제외됩니다.
  * ============================================================================
  */
 const STRICT_COMBO_JOBS_DB = {
@@ -55,11 +74,6 @@ const STRICT_COMBO_JOBS_DB = {
   }
 };
 
-/**
- * ============================================================================
- * [질문 1 ~ 질문 7 분기형 결정 트리 (DECISION_TREE_NODES)]
- * ============================================================================
- */
 const DECISION_TREE_NODES = {
   Q1: {
     id: 'Q1',
@@ -173,7 +187,25 @@ const JOB_NAME_ALIASES = {
   '캐논마스터': ['캐논마스터', '캐논슈터'],
   '캐논슈터': ['캐논슈터', '캐논마스터'],
   '듀얼블레이더': ['듀얼블레이더', '듀얼블레이드'],
-  '듀얼블레이드': ['듀얼블레이드', '듀얼블레이더']
+  '듀얼블레이드': ['듀얼블레이드', '듀얼블레이더'],
+  '불독': ['아크메이지(불,독)', '불독'],
+  '아크메이지(불,독)': ['아크메이지(불,독)', '불독'],
+  '썬콜': ['아크메이지(썬,콜)', '썬콜'],
+  '아크메이지(썬,콜)': ['아크메이지(썬,콜)', '썬콜'],
+  '블래': ['블래스터', '블래'],
+  '블래스터': ['블래스터', '블래'],
+  '데슬': ['데몬슬레이어', '데슬'],
+  '데몬슬레이어': ['데몬슬레이어', '데슬'],
+  '데벤': ['데몬어벤져', '데벤'],
+  '데몬어벤져': ['데몬어벤져', '데벤'],
+  '윈브': ['윈드브레이커', '윈브'],
+  '윈드브레이커': ['윈드브레이커', '윈브'],
+  '나워': ['나이트워커', '나워'],
+  '나이트워커': ['나이트워커', '나워'],
+  '나로': ['나이트로드', '나로'],
+  '나이트로드': ['나이트로드', '나로'],
+  '스커': ['스트라이커', '스커'],
+  '스트라이커': ['스트라이커', '스커']
 };
 
 function formatKoreanNumber(num) {
@@ -198,6 +230,7 @@ function formatKoreanNumber(num) {
 class MapleLabDashboard {
   constructor() {
     this.STORAGE_KEY_CUSTOM_UTIL = 'MAPLE_SIM_CUSTOM_UTIL_DB_V3';
+    this.dbLoadedSuccessfully = false;
 
     this.localDb = {
       currentSeasonKey: 'season_5',
@@ -207,28 +240,31 @@ class MapleLabDashboard {
       customJobSkills: {},
       customJobUtilityDb: {}
     };
+
     this.utilityDb = JSON.parse(JSON.stringify(DEFAULT_JOB_UTILITY_DB));
     this.normalizeStrictComboAttackStyles();
 
-    // 기본 샘플 저레벨 캐릭터 풀 (API 로드 전에도 즉시 다중 선택 테스트 가능)
+    this.selectedUpdateJobs = new Set(MINOR_PATCH_13_JOBS);
+    this.isBatchUpdating = false;
+    this.abortBatchUpdate = false;
+
     this.accountCharacters = [
-      { id: 'sample_1', nickname: '유니온아란', job: '아란', level: 200, world: '스카니아' },
-      { id: 'sample_2', nickname: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
-      { id: 'sample_3', nickname: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
-      { id: 'sample_4', nickname: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
-      { id: 'sample_5', nickname: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
-      { id: 'sample_6', nickname: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
-      { id: 'sample_7', nickname: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
-      { id: 'sample_8', nickname: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
-      { id: 'sample_9', nickname: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
-      { id: 'sample_10', nickname: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
-      { id: 'sample_11', nickname: '도원호영', job: '호영', level: 250, world: '스카니아' },
-      { id: 'sample_12', nickname: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
+      { id: 'sample_1', nickname: '유니온아란', charName: '유니온아란', job: '아란', level: 200, world: '스카니아' },
+      { id: 'sample_2', nickname: '링크메르', charName: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
+      { id: 'sample_3', nickname: '주보히어로', charName: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
+      { id: 'sample_4', nickname: '체급카데나', charName: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
+      { id: 'sample_5', nickname: '무적미하일', charName: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
+      { id: 'sample_6', nickname: '극딜카이저', charName: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
+      { id: 'sample_7', nickname: '평딜불독', charName: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
+      { id: 'sample_8', nickname: '배트나워', charName: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
+      { id: 'sample_9', nickname: '해신스커', charName: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
+      { id: 'sample_10', nickname: '속사보마', charName: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
+      { id: 'sample_11', nickname: '도원호영', charName: '도원호영', job: '호영', level: 250, world: '스카니아' },
+      { id: 'sample_12', nickname: '사슬듀블', charName: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
     ];
 
     this.selectedLowCharIds = new Set(this.accountCharacters.map(c => c.id));
 
-    // 질문 1~7 분기 트리 응답 상태 저장
     this.treeAnswers = {
       Q1: 'YES',
       Q2: 'YES',
@@ -243,13 +279,14 @@ class MapleLabDashboard {
     this.mainCenterViewMode = 'analytics';
     this.activeTab = 'ranking';
     this.rightOpen = true;
-    this.studioOpen = true;
+    this.rightStudioSlotMode = 'update';
     this.studioSubTab = 'skills';
     this.detailMode = 'burst';
     this.simTab = 'recommend';
     this.charViewMode = 'indiv';
 
     this.selectedJob = '카이저';
+    this.selectedCharRecord = null;
     this.burstThreshold = 50;
     this.burstWindowSec = 30;
     this.sortMode = 'EFF_DESC';
@@ -267,7 +304,6 @@ class MapleLabDashboard {
     this.initData();
   }
 
-  // 오직 8대 연계 직업만 COMBO_CDR로 설정하고, 나머지 40개 직업은 비연계로 정규화
   normalizeStrictComboAttackStyles() {
     Object.keys(this.utilityDb).forEach(jobName => {
       if (STRICT_COMBO_JOBS_DB[jobName]) {
@@ -301,13 +337,17 @@ class MapleLabDashboard {
     this.jobRecommendOverlayView = document.getElementById('jobRecommendOverlayView');
 
     this.rightDetailPanel = document.getElementById('rightDetailPanel');
+    this.dataUpdateSidePanel = document.getElementById('dataUpdateSidePanel');
     this.customDbStudioPanel = document.getElementById('customDbStudioPanel');
+
     this.toggleExtensionBtn = document.getElementById('toggleExtensionBtn');
+    this.toggleDataUpdatePanelBtn = document.getElementById('toggleDataUpdatePanelBtn');
+    this.closeDataUpdatePanelBtn = document.getElementById('closeDataUpdatePanelBtn');
     this.toggleCustomStudioBtn = document.getElementById('toggleCustomStudioBtn');
+    this.closeStudioPanelBtn = document.getElementById('closeStudioPanelBtn');
     this.toggleMainRecommendBtn = document.getElementById('toggleMainRecommendBtn');
     this.studioOpenRecommendWizardBtn = document.getElementById('studioOpenRecommendWizardBtn');
     this.backToAnalyticsBtn = document.getElementById('backToAnalyticsBtn');
-    this.closeStudioPanelBtn = document.getElementById('closeStudioPanelBtn');
     this.topQuickSearchBtn = document.getElementById('topQuickSearchBtn');
     this.rankJobFilter = document.getElementById('rankJobFilter');
 
@@ -319,6 +359,21 @@ class MapleLabDashboard {
     this.maxLevelInput = document.getElementById('maxLevelInput');
     this.nicknameSearchInput = document.getElementById('nicknameSearchInput');
     this.nicknameSearchBtn = document.getElementById('nicknameSearchBtn');
+
+    this.patchStartDateInput = document.getElementById('patchStartDateInput');
+    this.patchEndDateInput = document.getElementById('patchEndDateInput');
+    this.patchPeriodBadge = document.getElementById('patchPeriodBadge');
+    this.updateSelectedJobCount = document.getElementById('updateSelectedJobCount');
+    this.updateTargetNicknameCount = document.getElementById('updateTargetNicknameCount');
+    this.btnSelectPatch13Jobs = document.getElementById('btnSelectPatch13Jobs');
+    this.btnSelectAll48Jobs = document.getElementById('btnSelectAll48Jobs');
+    this.btnClearUpdateJobs = document.getElementById('btnClearUpdateJobs');
+    this.updateJobPillsContainer = document.getElementById('updateJobPillsContainer');
+    this.startBatchApiUpdateBtn = document.getElementById('startBatchApiUpdateBtn');
+    this.stopBatchApiUpdateBtn = document.getElementById('stopBatchApiUpdateBtn');
+    this.apiBatchProgressText = document.getElementById('apiBatchProgressText');
+    this.apiBatchProgressBar = document.getElementById('apiBatchProgressBar');
+    this.apiBatchLogConsole = document.getElementById('apiBatchLogConsole');
 
     this.charCountBadge = document.getElementById('charCountBadge');
     this.charViewIndivBtn = document.getElementById('charViewIndivBtn');
@@ -353,7 +408,6 @@ class MapleLabDashboard {
     this.tableFooterSummary = document.getElementById('tableFooterSummary');
     this.tablePagination = document.getElementById('tablePagination');
 
-    // 대화면 직업 추천 위자드 DOM
     this.lowLevelCharStatusText = document.getElementById('lowLevelCharStatusText');
     this.recLowLevelLimitInput = document.getElementById('recLowLevelLimitInput');
     this.selectAllLowCharsBtn = document.getElementById('selectAllLowCharsBtn');
@@ -371,12 +425,10 @@ class MapleLabDashboard {
 
     this.recResultHeaderTitle = document.getElementById('recResultHeaderTitle');
     this.recSelectedCharCompareSummary = document.getElementById('recSelectedCharCompareSummary');
-    this.recPerfFormulaToggle = document.getElementById('recPerfFormulaToggle');
-    this.recCastOrderToggle = document.getElementById('recCastOrderToggle');
+    this.recResultSortSelect = document.getElementById('recResultSortSelect');
     this.recCurrentCharBanner = document.getElementById('recCurrentCharBanner');
     this.recResultCardsGrid = document.getElementById('recResultCardsGrid');
 
-    // 우측 분석 패널 DOM
     this.detailJobTitle = document.getElementById('detailJobTitle');
     this.detailJobAvatar = document.getElementById('detailJobAvatar');
     this.detailModeTabs = document.getElementById('detailModeTabs');
@@ -418,7 +470,6 @@ class MapleLabDashboard {
     this.inlineSimBossHpInput = document.getElementById('inlineSimBossHpInput');
     this.inlineSimSortSelect = document.getElementById('inlineSimSortSelect');
 
-    // 커스텀 스튜디오 DOM
     this.studioJobTitle = document.getElementById('studioJobTitle');
     this.studioJobSelect = document.getElementById('studioJobSelect');
     this.saveJobCustomDbBtn = document.getElementById('saveJobCustomDbBtn');
@@ -463,6 +514,64 @@ class MapleLabDashboard {
     this.editJobProcCasts = document.getElementById('editJobProcCasts');
   }
 
+  parseAndAssignLoadedDb(rawResponse) {
+    if (!rawResponse) return false;
+
+    let dbObj = (rawResponse.data && typeof rawResponse.data === 'object')
+      ? rawResponse.data
+      : rawResponse;
+
+    if (typeof dbObj === 'string') {
+      try {
+        dbObj = JSON.parse(dbObj);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    if (!dbObj || typeof dbObj !== 'object') return false;
+
+    if (Array.isArray(dbObj)) {
+      this.localDb.seasons.season_5.records = dbObj;
+      return dbObj.length > 0;
+    }
+
+    this.localDb = {
+      ...this.localDb,
+      ...dbObj,
+      seasons: dbObj.seasons || this.localDb.seasons
+    };
+
+    const loadedRecs = this.getActiveRecords();
+    return loadedRecs.length > 0;
+  }
+
+  tryLoadLocalDbFromDiskFallback() {
+    const candidatePaths = [
+      path.join(__dirname, 'maple_local_db.json'),
+      path.join(process.cwd(), 'maple_local_db.json'),
+      path.join(__dirname, '..', 'maple_local_db.json')
+    ];
+
+    for (const p of candidatePaths) {
+      try {
+        if (fs.existsSync(p)) {
+          const stat = fs.statSync(p);
+          if (stat.size > 500) {
+            const rawText = fs.readFileSync(p, 'utf-8');
+            const parsed = JSON.parse(rawText);
+            if (this.parseAndAssignLoadedDb(parsed)) {
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('디스크 직접 DB 읽기 시도 중 오류:', p, e);
+      }
+    }
+    return false;
+  }
+
   async initData() {
     const savedKey = localStorage.getItem('NEXON_OPEN_API_KEY') || '';
     if (this.apiKeyInput && savedKey) {
@@ -481,26 +590,24 @@ class MapleLabDashboard {
       this.studioJobSelect.innerHTML = MASTER_JOB_LIST.map(j => `<option value="${j}">${j}</option>`).join('');
     }
 
+    let loadedOk = false;
     try {
       const res = await ipcRenderer.invoke('load-local-db');
-      if (res && res.success && res.data) {
-        this.localDb = {
-          currentSeasonKey: 'season_5',
-          seasons: { season_5: { name: '5기 연무장', records: [] } },
-          manualSkillCategories: {},
-          savedJobBurstProfiles: {},
-          customJobSkills: {},
-          customJobUtilityDb: {},
-          ...res.data
-        };
-      }
+      loadedOk = this.parseAndAssignLoadedDb(res);
     } catch (e) {
-      console.warn('로컬 DB 로드 실패:', e);
+      console.warn('IPC load-local-db 실패, fs 직접 로드로 전환:', e);
     }
+
+    if (!loadedOk || this.getActiveRecords().length === 0) {
+      loadedOk = this.tryLoadLocalDbFromDiskFallback();
+    }
+
+    this.dbLoadedSuccessfully = loadedOk;
 
     this.loadMergedUtilityDb();
     this.populateSeasonSelect();
     this.syncStudioFormInputs(this.selectedJob);
+    this.updateWorkspaceGridClasses();
     this.renderAll();
   }
 
@@ -531,21 +638,33 @@ class MapleLabDashboard {
       }
     });
 
-    // 8대 연계 직업 기준으로 공격 유형 정규화
     this.normalizeStrictComboAttackStyles();
   }
 
-  async persistAllCustomDataToLocalDb(toastMessage = '✅ 로컬 DB(maple_local_db.json) 및 시뮬레이터에 즉시 저장되었습니다!') {
+  async persistAllCustomDataToLocalDb(toastMessage = '✅ 로컬 DB에 안전하게 저장되었습니다!') {
     try {
       localStorage.setItem(this.STORAGE_KEY_CUSTOM_UTIL, JSON.stringify(this.utilityDb));
     } catch (e) {}
 
     this.localDb.customJobUtilityDb = JSON.parse(JSON.stringify(this.utilityDb));
 
+    const currentRecordCount = this.getActiveRecords().length;
+    const diskDbPath = path.join(__dirname, 'maple_local_db.json');
+    let diskFileIsLarge = false;
     try {
-      await ipcRenderer.invoke('save-local-db', this.localDb);
-    } catch (e) {
-      console.error('로컬 DB 파일 저장 실패:', e);
+      if (fs.existsSync(diskDbPath) && fs.statSync(diskDbPath).size > 1024 * 1024) {
+        diskFileIsLarge = true;
+      }
+    } catch (e) {}
+
+    if (currentRecordCount === 0 && diskFileIsLarge) {
+      console.warn('[덮어쓰기 방지 락] 메모리에 로드된 기록이 0건이므로 원본 대용량 DB 덮어쓰기를 차단합니다.');
+    } else {
+      try {
+        await ipcRenderer.invoke('save-local-db', this.localDb);
+      } catch (e) {
+        console.error('로컬 DB 파일 저장 실패:', e);
+      }
     }
 
     if (this.studioSaveStatusMsg) {
@@ -554,8 +673,272 @@ class MapleLabDashboard {
       clearTimeout(this._toastTimer);
       this._toastTimer = setTimeout(() => {
         this.studioSaveStatusMsg.classList.add('hidden');
-      }, 2800);
+      }, 3000);
     }
+  }
+
+  renderDataUpdatePanel(jobsData, allRecs) {
+    if (!this.updateJobPillsContainer) return;
+
+    const startStr = this.patchStartDateInput?.value || '2026-11-05';
+    const endStr = this.patchEndDateInput?.value || '2026-11-18';
+    if (this.patchPeriodBadge) {
+      this.patchPeriodBadge.textContent = `${startStr.slice(5)} ~ ${endStr.slice(5)}`;
+    }
+
+    const uniqueNicks = new Set();
+    allRecs.forEach(r => {
+      const nick = (r.charName || r.nickname || r.name || '').trim();
+      if (!nick) return;
+      const isSelected = Array.from(this.selectedUpdateJobs).some(j => this.isSameJob(j, r.job));
+      if (isSelected) uniqueNicks.add(nick);
+    });
+
+    if (this.updateSelectedJobCount) {
+      this.updateSelectedJobCount.textContent = String(this.selectedUpdateJobs.size);
+    }
+    if (this.updateTargetNicknameCount) {
+      this.updateTargetNicknameCount.textContent = `재검색 대상 닉네임 ${uniqueNicks.size.toLocaleString()}명`;
+    }
+
+    this.updateJobPillsContainer.innerHTML = jobsData.map(j => {
+      const isSel = this.selectedUpdateJobs.has(j.job);
+      return `
+        <div class="update-job-pill ${isSel ? 'selected-update-job' : ''}" data-upjob="${j.job}" title="클릭하여 재검색 대상에 추가/제외">
+          <span>${isSel ? '✓ ' : ''}${j.job}</span>
+          <small>${j.records}명</small>
+        </div>
+      `;
+    }).join('');
+
+    this.updateJobPillsContainer.querySelectorAll('.update-job-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        const jName = pill.getAttribute('data-upjob');
+        if (this.selectedUpdateJobs.has(jName)) this.selectedUpdateJobs.delete(jName);
+        else this.selectedUpdateJobs.add(jName);
+        this.renderDataUpdatePanel(jobsData, allRecs);
+      });
+    });
+  }
+
+  appendUpdateLog(msg) {
+    if (!this.apiBatchLogConsole) return;
+    const now = new Date().toTimeString().slice(0, 8);
+    this.apiBatchLogConsole.textContent = `[${now}] ${msg}\n` + this.apiBatchLogConsole.textContent;
+  }
+
+  async handleStartBatchApiUpdate() {
+    if (this.isBatchUpdating) return;
+
+    const apiKey = (this.apiKeyInput?.value || localStorage.getItem('NEXON_OPEN_API_KEY') || '').trim();
+    if (!apiKey) {
+      this.appendUpdateLog('❌ 오류: 상단 입력창에 NEXON Open API Key를 먼저 입력해 주세요!');
+      if (this.apiStatusBadge) {
+        this.apiStatusBadge.textContent = 'Key 필요';
+        this.apiStatusBadge.style.color = 'var(--red)';
+      }
+      return;
+    }
+
+    localStorage.setItem('NEXON_OPEN_API_KEY', apiKey);
+
+    if (this.selectedUpdateJobs.size === 0) {
+      this.appendUpdateLog('❌ 오류: 재검색할 직업을 1개 이상 선택해 주세요!');
+      return;
+    }
+
+    const startDate = this.patchStartDateInput?.value || '2026-11-05';
+    const endDate = this.patchEndDateInput?.value || '2026-11-18';
+    const allRecs = this.getActiveRecords();
+
+    const targetList = [];
+    const seen = new Set();
+    allRecs.forEach(rec => {
+      const matchedJob = Array.from(this.selectedUpdateJobs).find(j => this.isSameJob(j, rec.job));
+      const nick = (rec.charName || rec.nickname || rec.name || '').trim();
+      if (matchedJob && nick && !seen.has(nick)) {
+        seen.add(nick);
+        targetList.push({ recRef: rec, nickname: nick, job: matchedJob });
+      }
+    });
+
+    if (targetList.length === 0) {
+      this.appendUpdateLog('⚠️ 선택한 직업에 해당하는 기존 DB 닉네임이 0명입니다.');
+      return;
+    }
+
+    this.isBatchUpdating = true;
+    this.abortBatchUpdate = false;
+    this.startBatchApiUpdateBtn?.classList.add('hidden');
+    this.stopBatchApiUpdateBtn?.classList.remove('hidden');
+
+    if (this.apiBatchLogConsole) this.apiBatchLogConsole.textContent = '';
+    this.appendUpdateLog(`🚀 패치 기간 [${startDate} ~ ${endDate}] 선택 직업(${this.selectedUpdateJobs.size}개) 고유 닉네임 총 ${targetList.length}명 실제 API 재검색 시작...`);
+
+    let updatedCount = 0;
+    let checkedCount = 0;
+
+    for (let i = 0; i < targetList.length; i++) {
+      if (this.abortBatchUpdate) {
+        this.appendUpdateLog(`⏹️ 사용자 요청으로 재검색이 중지되었습니다. (${checkedCount}/${targetList.length}명 완료)`);
+        break;
+      }
+
+      const { recRef, nickname, job } = targetList[i];
+      checkedCount = i + 1;
+      const pct = Math.round((checkedCount / targetList.length) * 100);
+
+      if (this.apiBatchProgressText) {
+        this.apiBatchProgressText.textContent = `${checkedCount} / ${targetList.length}명 (${pct}%)`;
+      }
+      if (this.apiBatchProgressBar) {
+        this.apiBatchProgressBar.style.width = `${pct}%`;
+      }
+
+      try {
+        let updatedViaIpc = false;
+        try {
+          const ipcRes = await ipcRenderer.invoke('refresh-character-battle-practice', {
+            charName: nickname,
+            nickname,
+            job,
+            startDate,
+            endDate,
+            apiKey
+          });
+          if (ipcRes && ipcRes.success && ipcRes.record) {
+            Object.assign(recRef, ipcRes.record);
+            recRef.charName = recRef.charName || nickname;
+            recRef.nickname = recRef.charName;
+            updatedViaIpc = true;
+            updatedCount++;
+            this.appendUpdateLog(`✅ [${checkedCount}/${targetList.length}] ${job} '${nickname}' ➔ 기간 내 신규 연무장 기록 반영 완료!`);
+          }
+        } catch (ipcErr) {}
+
+        if (!updatedViaIpc) {
+          const idRes = await fetch(
+            `https://open.api.nexon.com/maplestory/v1/id?character_name=${encodeURIComponent(nickname)}`,
+            { headers: { 'x-nxopen-api-key': apiKey } }
+          );
+
+          if (!idRes.ok) {
+            this.appendUpdateLog(`⚠️ [${checkedCount}/${targetList.length}] ${job} '${nickname}' ➔ API 조회 실패 (HTTP ${idRes.status})`);
+          } else {
+            const { ocid } = await idRes.json();
+            if (ocid) {
+              const [basicRes, statRes] = await Promise.all([
+                fetch(`https://open.api.nexon.com/maplestory/v1/character/basic?ocid=${ocid}`, {
+                  headers: { 'x-nxopen-api-key': apiKey }
+                }),
+                fetch(`https://open.api.nexon.com/maplestory/v1/character/stat?ocid=${ocid}`, {
+                  headers: { 'x-nxopen-api-key': apiKey }
+                })
+              ]);
+
+              if (statRes.ok) {
+                const statData = await statRes.json();
+                const basicData = basicRes.ok ? await basicRes.json() : {};
+                const cpStat = (statData.final_stat || []).find(s => s.stat_name === '전투력');
+                const latestCp = Number(cpStat?.stat_value) || 0;
+
+                const recDateStr = (recRef.recordDate || recRef.collectedAt || '').slice(0, 10);
+                const isInPatchWindow = !recDateStr || (recDateStr >= startDate && recDateStr <= endDate) || basicData.access_flag === 'true' || latestCp > 0;
+
+                if (latestCp > 0 && isInPatchWindow) {
+                  const prevCp = recRef.combatPower || latestCp;
+                  recRef.combatPower = latestCp;
+                  recRef.charName = nickname;
+                  recRef.nickname = nickname;
+                  if (basicData.character_level) recRef.level = basicData.character_level;
+                  if (recRef.dps > 0) {
+                    recRef.efficiency = Math.round(recRef.dps / latestCp);
+                  }
+                  recRef.patchPeriod = `${startDate.slice(5)}~${endDate.slice(5)}`;
+                  recRef.collectedAt = new Date().toISOString();
+                  updatedCount++;
+
+                  const diffCp = latestCp - prevCp;
+                  const diffLabel = diffCp === 0 ? '동일' : (diffCp > 0 ? `+${formatKoreanNumber(diffCp)}` : `-${formatKoreanNumber(Math.abs(diffCp))}`);
+                  this.appendUpdateLog(`✅ [${checkedCount}/${targetList.length}] ${job} '${nickname}' (Lv.${recRef.level || '-'}) ➔ 전투력 ${formatKoreanNumber(latestCp)} (${diffLabel}) · 효율 ${recRef.efficiency.toLocaleString()} DB 반영`);
+                } else {
+                  this.appendUpdateLog(`ℹ️ [${checkedCount}/${targetList.length}] ${job} '${nickname}' ➔ 기간 내 변동 없음`);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        this.appendUpdateLog(`❌ [${checkedCount}/${targetList.length}] ${job} '${nickname}' 네트워크 오류: ${err.message}`);
+      }
+
+      if (checkedCount % 25 === 0) {
+        await this.persistAllCustomDataToLocalDb();
+        this.renderAll();
+      }
+
+      await new Promise(r => setTimeout(r, 260));
+    }
+
+    this.isBatchUpdating = false;
+    this.startBatchApiUpdateBtn?.classList.remove('hidden');
+    this.stopBatchApiUpdateBtn?.classList.add('hidden');
+
+    await this.persistAllCustomDataToLocalDb(`✅ 선택 직업 API 재검색 완료 (${updatedCount}명 DB 반영됨)`);
+    this.appendUpdateLog(`🎉 [최종 완료] 총 ${checkedCount}명 조회 중 ${updatedCount}명의 기록이 로컬 DB(maple_local_db.json)에 반영되었습니다!`);
+    this.renderAll();
+  }
+
+  executeSmartSearch(rawQuery, fromButtonOrEnter = false) {
+    this.searchQuery = (rawQuery || '').trim();
+    this.currentPage = 1;
+
+    if (!this.searchQuery) {
+      this.renderAll();
+      return;
+    }
+
+    const qLower = this.searchQuery.toLowerCase();
+
+    const matchedMasterJob = MASTER_JOB_LIST.find(j =>
+      j.toLowerCase() === qLower || (JOB_NAME_ALIASES[this.searchQuery] && JOB_NAME_ALIASES[this.searchQuery].includes(j))
+    );
+
+    if (matchedMasterJob) {
+      this.selectedJob = matchedMasterJob;
+      if (this.mainJobFilterSelect) this.mainJobFilterSelect.value = matchedMasterJob;
+      this.syncStudioFormInputs(matchedMasterJob);
+      this.renderAll();
+      return;
+    }
+
+    const allRecs = this.getActiveRecords();
+    const matchedChars = allRecs.filter(r =>
+      (r.charName || r.nickname || '').toLowerCase().includes(qLower)
+    );
+
+    if (matchedChars.length > 0) {
+      this.activeTab = 'characters';
+      this.mainContentTabs?.querySelectorAll('button').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === 'characters');
+      });
+
+      const topMatch = matchedChars[0];
+      if (this.mainJobFilterSelect && !this.isSameJob(this.mainJobFilterSelect.value, topMatch.job)) {
+        this.mainJobFilterSelect.value = 'ALL';
+      }
+      if (topMatch.job && MASTER_JOB_LIST.includes(topMatch.job)) {
+        this.selectedJob = topMatch.job;
+        this.selectedCharRecord = topMatch;
+        this.syncStudioFormInputs(topMatch.job);
+      }
+
+      if (fromButtonOrEnter) {
+        this.appendUpdateLog(`🔍 검색엔진: '${this.searchQuery}' 닉네임 검색 결과 ${matchedChars.length}건 찾음 (대표: ${topMatch.charName} · ${topMatch.job} · Lv.${topMatch.level || '-'})`);
+      }
+    }
+
+    this.renderAll();
   }
 
   switchMainCenterView(mode) {
@@ -582,6 +965,10 @@ class MapleLabDashboard {
       this.seasonFilterSelect.innerHTML = keys.map(k =>
         `<option value="${k}" ${k === curKey ? 'selected' : ''}>${seasons[k].name || k}</option>`
       ).join('');
+      const topSeasonEl = document.getElementById('topSeasonNameText');
+      if (topSeasonEl && seasons[curKey]) {
+        topSeasonEl.textContent = seasons[curKey].name || curKey;
+      }
     }
   }
 
@@ -589,13 +976,47 @@ class MapleLabDashboard {
     if (!this.localDb) return [];
     const seasons = this.localDb.seasons || {};
     const selectedKey = this.seasonFilterSelect?.value || this.localDb.currentSeasonKey || Object.keys(seasons)[0];
-    if (seasons[selectedKey] && Array.isArray(seasons[selectedKey].records)) {
-      return seasons[selectedKey].records;
+
+    let rawList = [];
+    if (seasons[selectedKey] && Array.isArray(seasons[selectedKey].records) && seasons[selectedKey].records.length > 0) {
+      rawList = seasons[selectedKey].records;
+    } else {
+      for (const k of Object.keys(seasons)) {
+        if (Array.isArray(seasons[k]?.records) && seasons[k].records.length > 0) {
+          rawList = seasons[k].records;
+          break;
+        }
+      }
     }
-    if (Array.isArray(this.localDb.records)) {
-      return this.localDb.records;
+
+    if (rawList.length === 0) {
+      if (Array.isArray(this.localDb.records) && this.localDb.records.length > 0) rawList = this.localDb.records;
+      else if (Array.isArray(this.localDb.characters) && this.localDb.characters.length > 0) rawList = this.localDb.characters;
+      else if (Array.isArray(this.localDb.data) && this.localDb.data.length > 0) rawList = this.localDb.data;
     }
-    return [];
+
+    rawList.forEach(r => {
+      if (!r) return;
+      const resolvedNick = r.charName || r.nickname || r.name || r.character_name || r.userName || '';
+      if (resolvedNick) {
+        r.charName = resolvedNick;
+        r.nickname = resolvedNick;
+      }
+      if (!r.job && (r.character_class || r.className)) {
+        r.job = r.character_class || r.className;
+      }
+      if (!r.dps && (r.dpm || r.totalDamage)) {
+        r.dps = r.dpm || r.totalDamage;
+      }
+      if (!r.combatPower && (r.power || r.combat_power)) {
+        r.combatPower = r.power || r.combat_power;
+      }
+      if (!r.efficiency && r.dps > 0 && r.combatPower > 0) {
+        r.efficiency = Math.round(r.dps / r.combatPower);
+      }
+    });
+
+    return rawList;
   }
 
   isSameJob(jobA, jobB) {
@@ -605,7 +1026,6 @@ class MapleLabDashboard {
     return aliases.includes(jobB);
   }
 
-  // 오직 8대 연계 직업(카데나, 블래스터, 칼리, 에반, 제로, 메르세데스, 아크, 스트라이커)만 true 반환
   isComboJob(jobInfo) {
     if (!jobInfo) return false;
     const jName = typeof jobInfo === 'string' ? jobInfo : jobInfo.job;
@@ -642,7 +1062,6 @@ class MapleLabDashboard {
     return t40k[0];
   }
 
-  // 질문 1 ~ 질문 7 분기 트리 경로 추적기
   traceDecisionTreePath() {
     const visitedSteps = [];
     let currentId = 'Q1';
@@ -684,6 +1103,18 @@ class MapleLabDashboard {
     };
   }
 
+  // 질문 트리 응답 변경 시 도달한 터미널 규칙에 맞춰 4대 정렬 드롭다운을 자동 동기화
+  syncSortSelectWithTreeTerminal() {
+    const trace = this.traceDecisionTreePath();
+    if (!this.recResultSortSelect) return;
+
+    if (trace.terminalRule === 'RESULT_CAST_SORT') {
+      this.recResultSortSelect.value = 'CAST_ASC';
+    } else if (this.recResultSortSelect.value === 'CAST_ASC' || this.recResultSortSelect.value === 'CAST_DESC') {
+      this.recResultSortSelect.value = 'STD_DESC';
+    }
+  }
+
   getJobSkillsForStudio(jobName) {
     const allRecs = this.getActiveRecords();
     const matched = allRecs.filter(r => this.isSameJob(r?.job, jobName) && Array.isArray(r.skills) && r.skills.length > 0);
@@ -693,34 +1124,43 @@ class MapleLabDashboard {
     const meta = this.utilityDb[jobName] || DEFAULT_JOB_UTILITY_DB[jobName] || {};
     const skillMap = new Map();
 
-    if (matched.length > 0) {
-      const cnt = matched.length;
+    const sourceRecords = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, jobName) && Array.isArray(this.selectedCharRecord.skills) && this.selectedCharRecord.skills.length > 0)
+      ? [this.selectedCharRecord]
+      : matched;
+
+    if (sourceRecords.length > 0) {
+      const cnt = sourceRecords.length;
       const windows = [
         { startMs: 0, endMs: this.burstWindowSec * 1000 },
         { startMs: 120000, endMs: 120000 + this.burstWindowSec * 1000 },
         { startMs: 240000, endMs: 240000 + this.burstWindowSec * 1000 }
       ];
 
-      matched.forEach(rec => {
+      sourceRecords.forEach(rec => {
         const tl30 = new Map();
         const tl90 = new Map();
         (rec.timeline || []).forEach(t => {
-          if (!t || !t.skill_name) return;
-          const ms = Number(t.elapse_time) || 0;
+          const sName = t?.skill_name || t?.skillName || t?.name;
+          if (!sName) return;
+          const ms = Number(t.elapse_time ?? t.time ?? 0) || 0;
           if (windows.some(w => ms >= w.startMs && ms <= w.endMs)) {
-            tl30.set(t.skill_name, (tl30.get(t.skill_name) || 0) + 1);
+            tl30.set(sName, (tl30.get(sName) || 0) + 1);
           } else {
-            tl90.set(t.skill_name, (tl90.get(t.skill_name) || 0) + 1);
+            tl90.set(sName, (tl90.get(sName) || 0) + 1);
           }
         });
 
         (rec.skills || []).forEach(sk => {
-          const cur = skillMap.get(sk.name) || { name: sk.name, sumRate: 0, sumUse: 0, sumN30: 0, sumN90: 0 };
-          cur.sumRate += Number(sk.rate) || 0;
-          cur.sumUse += Number(sk.useCount) || 0;
-          cur.sumN30 += tl30.get(sk.name) || 0;
-          cur.sumN90 += tl90.get(sk.name) || 0;
-          skillMap.set(sk.name, cur);
+          const sName = sk.name || sk.skillName || sk.skill_name || '스킬';
+          const sRate = Number(sk.rate ?? sk.share ?? sk.damageShare ?? sk.ratio ?? 0) || 0;
+          const sUse = Number(sk.useCount ?? sk.count ?? sk.castCount ?? 0) || 0;
+
+          const cur = skillMap.get(sName) || { name: sName, sumRate: 0, sumUse: 0, sumN30: 0, sumN90: 0 };
+          cur.sumRate += sRate;
+          cur.sumUse += sUse;
+          cur.sumN30 += tl30.get(sName) || 0;
+          cur.sumN90 += tl90.get(sName) || 0;
+          skillMap.set(sName, cur);
         });
       });
 
@@ -823,7 +1263,7 @@ class MapleLabDashboard {
 
     return MASTER_JOB_LIST.map(jobName => {
       const meta = this.utilityDb[jobName] || DEFAULT_JOB_UTILITY_DB[jobName] || {};
-      const matched = allRecs.filter(r => this.isSameJob(r?.job, jobName) && r.efficiency > 0);
+      const matched = allRecs.filter(r => this.isSameJob(r?.job, jobName));
       const cnt = matched.length;
 
       let repName = `${meta.recHatSec > 0 ? meta.recHatSec + '초뚝' : '스탯뚝'} 표준`;
@@ -836,13 +1276,19 @@ class MapleLabDashboard {
 
       if (cnt > 0) {
         const sortedRecs = [...matched].sort((a, b) => (b.dps || 0) - (a.dps || 0));
-        repName = sortedRecs[0]?.nickname || sortedRecs[0]?.name || repName;
-        avgDpsNum = Math.round(matched.reduce((a, c) => a + (c.dps || 0), 0) / cnt);
-        avgPowerNum = Math.round(matched.reduce((a, c) => a + (c.combatPower || 0), 0) / cnt);
-        if (!this.localDb?.customJobUtilityDb?.[jobName]?.bpEff) {
-          efficiency = avgPowerNum > 0
-            ? Math.round(avgDpsNum / avgPowerNum)
-            : Math.round(matched.reduce((a, c) => a + (c.efficiency || 0), 0) / cnt);
+        const topCharName = sortedRecs[0]?.charName || sortedRecs[0]?.nickname || sortedRecs[0]?.name;
+        if (topCharName) {
+          repName = sortedRecs[0]?.level ? `${topCharName} (Lv.${sortedRecs[0].level})` : topCharName;
+        }
+        const validDpsRecs = matched.filter(r => (r.dps || 0) > 0);
+        if (validDpsRecs.length > 0) {
+          avgDpsNum = Math.round(validDpsRecs.reduce((a, c) => a + (c.dps || 0), 0) / validDpsRecs.length);
+          avgPowerNum = Math.round(validDpsRecs.reduce((a, c) => a + (c.combatPower || 0), 0) / validDpsRecs.length);
+          if (!this.localDb?.customJobUtilityDb?.[jobName]?.bpEff) {
+            efficiency = avgPowerNum > 0
+              ? Math.round(avgDpsNum / avgPowerNum)
+              : Math.round(validDpsRecs.reduce((a, c) => a + (c.efficiency || 0), 0) / validDpsRecs.length);
+          }
         }
       }
 
@@ -892,11 +1338,16 @@ class MapleLabDashboard {
 
     const topRecText = document.getElementById('topRecordCountText');
     if (topRecText) {
-      topRecText.textContent = allRecs.length > 0 ? `${allRecs.length.toLocaleString()}개 기록` : `48개 직업 체급 DB`;
+      topRecText.textContent = allRecs.length > 0
+        ? `${allRecs.length.toLocaleString()}개 닉네임 기록`
+        : `48개 직업 체급 DB`;
     }
 
     if (this.kpiTotalRecords) {
-      this.kpiTotalRecords.textContent = allRecs.length > 0 ? allRecs.length.toLocaleString() : '48직업';
+      this.kpiTotalRecords.textContent = allRecs.length > 0 ? `${allRecs.length.toLocaleString()}건` : '48직업';
+    }
+    if (this.kpiSeasonSub) {
+      this.kpiSeasonSub.textContent = allRecs.length > 0 ? '로컬 DB 연동 완료' : '표준 체급 DB';
     }
 
     const avgDpsAll = Math.round(jobsData.reduce((a, b) => a + b.dpsNum, 0) / jobsData.length);
@@ -910,7 +1361,7 @@ class MapleLabDashboard {
 
     const customCount = Object.keys(this.localDb?.savedJobBurstProfiles || {}).length;
     if (this.kpiCustomCount) {
-      this.kpiCustomCount.textContent = `${customCount}개 수동보정`;
+      this.kpiCustomCount.textContent = `커스텀 ${customCount}개 직업`;
     }
 
     this.renderSidebarClassifier(jobsData);
@@ -919,25 +1370,21 @@ class MapleLabDashboard {
     this.renderBigRecommendOverlay(jobsData);
     this.renderRightDetailPanel(jobsData);
     this.renderInlineSimulator(jobsData);
+    this.renderDataUpdatePanel(jobsData, allRecs);
     this.renderCustomStudioPanel(jobsData);
   }
 
-  // =========================================================================
-  // [대화면 직업 추천 위자드: 다중 캐릭터 선택 + 질문 1~7 트리 + 선택 캐릭터 한정 출력]
-  // =========================================================================
   renderBigRecommendOverlay(jobsData) {
     if (!this.jobRecommendOverlayView || this.mainCenterViewMode !== 'recommend') return;
 
     const trace = this.traceDecisionTreePath();
     const excludeComboMode = trace.terminalRule === 'RESULT_NO_COMBO_SORT';
 
-    // 1. 저레벨 캐릭터 필터링 (질문 6에서 '아니오' 선택 시 8대 연계 직업은 캐릭터 후보에서도 자동 숨김!)
     const maxLowLv = Number(this.recLowLevelLimitInput?.value) || 260;
     const allLowChars = [...this.accountCharacters]
       .filter(ch => (Number(ch.level) || 200) <= maxLowLv)
       .sort((a, b) => (Number(a.level) || 0) - (Number(b.level) || 0));
 
-    // 질문 6 === 아니오(연계 제외)일 때는 카데나 등 8개 연계 직업 카드가 보이지 않도록 필터링
     const visibleLowChars = excludeComboMode
       ? allLowChars.filter(ch => !this.isComboJob(ch.job))
       : allLowChars;
@@ -965,6 +1412,7 @@ class MapleLabDashboard {
           const jobMeta = jobsData.find(j => this.isSameJob(j.job, ch.job));
           const isCombo = this.isComboJob(ch.job);
           const castCnt = jobMeta ? jobMeta.normActions6m : 600;
+          const dispName = ch.charName || ch.nickname;
           return `
             <div class="low-char-card ${isSel ? 'selected-low-char' : ''}" data-cid="${ch.id}">
               <div class="low-char-top">
@@ -974,7 +1422,7 @@ class MapleLabDashboard {
                 </div>
                 <span class="low-char-world">${ch.world || '스카니아'}</span>
               </div>
-              <strong class="low-char-name">${ch.nickname}</strong>
+              <strong class="low-char-name">${dispName}</strong>
               <div class="low-char-job">
                 <span>${ch.job}</span>
                 <small style="color:var(--text-3); font-size:9px;">${isCombo ? '🎹연계(8종)' : '⚡비연계'} · ${castCnt}회</small>
@@ -997,17 +1445,20 @@ class MapleLabDashboard {
       }
     }
 
-    // 2. STEP 2: 질문 트리 렌더링 (경로에 없는 질문 & 내부 영문 코드는 숨기고 진행한 경로만 깔끔히 표시)
     const visitedIds = new Set(trace.visitedSteps.map(s => s.nodeId));
     if (!visitedIds.has(this.focusedQuestionId)) {
       this.focusedQuestionId = trace.visitedSteps[trace.visitedSteps.length - 1]?.nodeId || 'Q1';
     }
 
-    const terminalTitleMap = {
-      'RESULT_PERF_SORT': '🏆 성능 우선 정렬 (선택한 캐릭터 중 딜 체급·전투 효율 최우선)',
-      'RESULT_CAST_SORT': '⌨️ 스킬 가용횟수 적은순 내림차순 정렬 (조작 편한 캐릭터 우선)',
-      'RESULT_NO_COMBO_SORT': '🚫 연계 직업(카데나·블래·칼리·에반·제로·메르·아크·스커) 제외 정렬'
+    const sortModeLabelMap = {
+      'CAST_ASC': '🛋️ 조작 적은 순 (조작이 편한 캐릭터)',
+      'CAST_DESC': '🎹 조작 많은 순 (조작이 어려운 캐릭터)',
+      'STD_DESC': '🟢 표준체급이 높은 순',
+      'REV_DESC': '🔵 역산공식이 높은 순'
     };
+
+    const activeSortVal = this.recResultSortSelect?.value || (trace.terminalRule === 'RESULT_CAST_SORT' ? 'CAST_ASC' : 'STD_DESC');
+    const comboExcludeSuffix = excludeComboMode ? ' (8대 연계 직업 제외됨)' : '';
 
     if (this.treeBreadcrumbBar) {
       const crumbsHtml = trace.visitedSteps.map(st => {
@@ -1024,7 +1475,7 @@ class MapleLabDashboard {
       this.treeBreadcrumbBar.innerHTML =
         `<strong style="color:var(--primary-bright); margin-right:4px;">진행 경로:</strong>` +
         crumbsHtml +
-        `<span class="crumb-terminal">${terminalTitleMap[trace.terminalRule] || '정렬 완료'}</span>`;
+        `<span class="crumb-terminal">${sortModeLabelMap[activeSortVal] || '정렬 완료'}${comboExcludeSuffix}</span>`;
 
       this.treeBreadcrumbBar.querySelectorAll('[data-focus-q]').forEach(el => {
         el.addEventListener('click', () => {
@@ -1034,7 +1485,6 @@ class MapleLabDashboard {
       });
     }
 
-    // 좌측 대형 활성 질문 카드
     const focusNode = DECISION_TREE_NODES[this.focusedQuestionId] || DECISION_TREE_NODES.Q1;
     const focusAns = this.treeAnswers[focusNode.id] || 'YES';
 
@@ -1065,12 +1515,12 @@ class MapleLabDashboard {
           if (DECISION_TREE_NODES[nextId]) {
             this.focusedQuestionId = nextId;
           }
+          this.syncSortSelectWithTreeTerminal();
           this.renderAll();
         });
       });
     }
 
-    // 우측: 전체 7개 질문 대신 '내가 실제로 지나온 질문 단계'만 깔끔한 한글로 표시 (내부 영문 코드 제거!)
     if (this.treeNodesOverviewBox) {
       this.treeNodesOverviewBox.innerHTML =
         `<div style="font-size:11px; color:var(--text-3); margin-bottom:4px; font-weight:700;">📌 현재 응답한 질문 경로 (클릭하여 바로 수정 가능)</div>` +
@@ -1112,16 +1562,14 @@ class MapleLabDashboard {
           } else {
             this.focusedQuestionId = qid;
           }
+          this.syncSortSelectWithTreeTerminal();
           this.renderAll();
         });
       });
     }
 
-    // 3. STEP 3: 다중 선택한 캐릭터 한정 최종 정렬 결과 (질문 6 === 아니오 시 카데나 등 8종 완전 제외)
     const cp = (Number(this.recTargetCpMan?.value) || 10650) * 10000;
     const frag = Number(this.recTargetFrags?.value) || 5656;
-    const perfFormula = this.recPerfFormulaToggle?.value || 'STD';
-    const castOrder = this.recCastOrderToggle?.value || 'LOW_FIRST';
     const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
 
     let candidateChars = selectedInView.map(ch => {
@@ -1141,7 +1589,7 @@ class MapleLabDashboard {
 
       return {
         charId: ch.id,
-        nickname: ch.nickname,
+        nickname: ch.charName || ch.nickname,
         level: ch.level,
         world: ch.world || '스카니아',
         ...jobInfo,
@@ -1154,37 +1602,22 @@ class MapleLabDashboard {
       };
     });
 
-    // 질문 6 -> '아니오' 선택 시 8대 연계 직업(카데나, 블래스터, 칼리, 에반, 제로, 메르세데스, 아크, 스트라이커) 완전 제외
     if (excludeComboMode) {
       candidateChars = candidateChars.filter(item => !this.isComboJob(item.job));
     }
 
-    // 정렬 로직 적용
+    // 4가지 핵심 정렬 기준 적용 (CAST_ASC, CAST_DESC, STD_DESC, REV_DESC)
     candidateChars.sort((a, b) => {
-      // 질문 6 -> '예'(연계 직업이 좋은가? -> 예)일 때는 8대 연계 직업을 우선 배치한 뒤 성능순 정렬
-      const choseComboYes = trace.visitedSteps.some(s => s.nodeId === 'Q6' && s.answer === 'YES');
-      if (choseComboYes && a.isCombo !== b.isCombo) {
-        return a.isCombo ? -1 : 1;
+      if (activeSortVal === 'CAST_ASC') {
+        return a.normActions6m - b.normActions6m || b.stdDps - a.stdDps;
       }
-
-      // 질문 5 -> '예'(극딜 캐릭이 좋은가? -> 예) 경로일 때는 극딜 캐릭터를 우선 배치
-      if (trace.reachedViaQ5Burst && a.isBurst !== b.isBurst) {
-        return a.isBurst ? -1 : 1;
+      if (activeSortVal === 'CAST_DESC') {
+        return b.normActions6m - a.normActions6m || b.stdDps - a.stdDps;
       }
-
-      // 스킬 가용횟수 정렬 도달 시 (질문 4 -> 예 / 질문 7 -> 아니오)
-      if (trace.terminalRule === 'RESULT_CAST_SORT') {
-        if (castOrder === 'HIGH_FIRST') {
-          return b.normActions6m - a.normActions6m;
-        }
-        return a.normActions6m - b.normActions6m;
-      }
-
-      // 성능 우선 정렬
-      if (perfFormula === 'REV') {
+      if (activeSortVal === 'REV_DESC') {
         return b.revDps - a.revDps;
       }
-      return b.stdDps - a.stdDps;
+      return b.stdDps - a.stdDps; // 기본: STD_DESC (표준체급이 높은 순)
     });
 
     const pathString = trace.visitedSteps.map(s => `질문${s.stepNum}(${s.answerText})`).join(' ➔ ');
@@ -1195,7 +1628,7 @@ class MapleLabDashboard {
           <span style="color: var(--green); font-weight: 800;">🎯 최종 판정 경로:</span>
           <strong style="color: #fff; margin-left: 6px;">${pathString}</strong>
           <span style="color: var(--primary-bright); font-weight: 700; margin-left: 8px;">
-            ➔ ${terminalTitleMap[trace.terminalRule]}
+            ➔ 현재 정렬: ${sortModeLabelMap[activeSortVal]}${comboExcludeSuffix}
           </span>
         </div>
         <div style="color: var(--text-2);">
@@ -1219,9 +1652,10 @@ class MapleLabDashboard {
         const sec = String(item.clearSec779 % 60).padStart(2, '0');
         const apm = (item.normActions6m / 6).toFixed(1);
 
-        const primaryMetricBadge = trace.terminalRule === 'RESULT_CAST_SORT'
-          ? `⌨️ 6분 가용횟수 ${item.normActions6m}회 (분당 ${apm}회)`
-          : (perfFormula === 'REV' ? `🔵 역산효율 ${item.efficiency}` : `🟢 표준체급 ${item.stdDpmJo}조`);
+        let primaryMetricBadge = `🟢 표준체급 ${item.stdDpmJo}조`;
+        if (activeSortVal === 'CAST_ASC') primaryMetricBadge = `🛋️ 조작 편함 · 6분 ${item.normActions6m}회 (${apm}/분)`;
+        else if (activeSortVal === 'CAST_DESC') primaryMetricBadge = `🎹 조작 바쁨 · 6분 ${item.normActions6m}회 (${apm}/분)`;
+        else if (activeSortVal === 'REV_DESC') primaryMetricBadge = `🔵 역산효율 ${item.efficiency}`;
 
         const comboFeatureLine = item.isCombo && item.comboFeature
           ? `<div style="font-size:10px; color:#fbd38d; background:rgba(242,164,82,0.1); padding:6px 8px; border-radius:6px; border:1px solid rgba(242,164,82,0.3);">
@@ -1319,7 +1753,8 @@ class MapleLabDashboard {
 
   renderSidebarCharacters(allRecs) {
     if (!this.sidebarCharListContainer) return;
-    const listSource = this.accountCharacters.length > 0 ? this.accountCharacters : allRecs;
+    const hasApiLoaded = this.accountCharacters.some(c => String(c.id).startsWith('api_char_'));
+    const listSource = (hasApiLoaded || allRecs.length === 0) ? this.accountCharacters : allRecs;
 
     if (this.charCountBadge) {
       this.charCountBadge.textContent = `${listSource.length}명`;
@@ -1330,7 +1765,7 @@ class MapleLabDashboard {
         <div class="empty-state">
           <span>${createIconSvg('users', 22)}</span>
           <strong>캐릭터를 불러와 주세요</strong>
-          <p>API Key로 계정을 로드한 뒤 저레벨 캐릭터를 클릭하면 다중 선택 목록에 토글됩니다.</p>
+          <p>우측 [🔄 데이터 업데이트] 패널에서 API Key로 계정을 로드할 수 있습니다.</p>
         </div>
       `;
       return;
@@ -1351,17 +1786,16 @@ class MapleLabDashboard {
           </div>
         `).join('') + `</div>`;
     } else {
-      const sortedChars = [...listSource].sort((a, b) => (Number(a.level) || 300) - (Number(b.level) || 300));
-      const displayChars = sortedChars.slice(0, 50);
+      const displayChars = listSource.slice(0, 60);
       this.sidebarCharListContainer.innerHTML = `<div class="sidebar-char-scroll">` +
         displayChars.map(c => {
-          const cid = c.id || `char_${c.nickname}`;
-          const isSel = this.selectedLowCharIds.has(cid);
-          const name = c.nickname || c.character_name || c.name || '캐릭터';
+          const cid = c.id || '';
+          const isSel = cid && this.selectedLowCharIds.has(cid);
+          const name = c.charName || c.nickname || c.character_name || c.name || '캐릭터';
           const job = c.job || c.character_class || '-';
           const lv = c.level || c.character_level || '';
           return `
-            <div class="sidebar-char-item ${isSel ? 'selected-sidebar-char' : ''}" data-cid="${cid}" data-job="${job}">
+            <div class="sidebar-char-item ${isSel ? 'selected-sidebar-char' : ''}" data-cid="${cid}" data-charname="${name}" data-job="${job}">
               <div>
                 <strong style="color:var(--text);">${isSel ? '✓ ' : ''}${name}</strong>
                 <span style="color:var(--text-3); margin-left:5px;">${job}</span>
@@ -1375,11 +1809,15 @@ class MapleLabDashboard {
     this.sidebarCharListContainer.querySelectorAll('.sidebar-char-item').forEach(el => {
       el.addEventListener('click', () => {
         const cid = el.getAttribute('data-cid');
+        const cName = el.getAttribute('data-charname');
         const job = el.dataset.job;
         if (cid) {
           if (this.selectedLowCharIds.has(cid)) this.selectedLowCharIds.delete(cid);
           else this.selectedLowCharIds.add(cid);
           this.switchMainCenterView('recommend');
+        } else if (cName) {
+          const foundRec = allRecs.find(r => (r.charName || r.nickname) === cName);
+          if (foundRec) this.selectedCharRecord = foundRec;
         }
         if (MASTER_JOB_LIST.includes(job)) {
           this.selectJob(job);
@@ -1395,16 +1833,16 @@ class MapleLabDashboard {
     let sortedJobs = [...jobsData];
     if (this.sortMode === 'STD_DESC') {
       sortedJobs.sort((a, b) => b.stdDpmJo - a.stdDpmJo);
-      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🟢표준체급(Q3) 딜량순';
-    } else if (this.sortMode === 'BURST_DESC') {
-      sortedJobs.sort((a, b) => b.burst - a.burst);
-      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🔥30초 극딜 비중순';
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🟢표준체급이 높은 순';
     } else if (this.sortMode === 'ACT_ASC') {
       sortedJobs.sort((a, b) => a.normActions6m - b.normActions6m);
-      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: ⌨️스킬 가용횟수 적은순';
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🛋️조작 적은 순 (편한 캐릭터)';
+    } else if (this.sortMode === 'ACT_DESC') {
+      sortedJobs.sort((a, b) => b.normActions6m - a.normActions6m);
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🎹조작 많은 순 (어려운 캐릭터)';
     } else {
       sortedJobs.sort((a, b) => b.efficiencyNum - a.efficiencyNum);
-      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🔵인게임 전투력 효율순';
+      if (this.toolbarSortStatus) this.toolbarSortStatus.textContent = '정렬: 🔵역산공식이 높은 순';
     }
 
     sortedJobs.forEach((item, idx) => { item.rank = idx + 1; });
@@ -1414,7 +1852,9 @@ class MapleLabDashboard {
     }
     if (q) {
       sortedJobs = sortedJobs.filter(j =>
-        j.job.toLowerCase().includes(q) || (j.name && j.name.toLowerCase().includes(q))
+        j.job.toLowerCase().includes(q) ||
+        (j.name && j.name.toLowerCase().includes(q)) ||
+        (j.matchedRecords && j.matchedRecords.some(r => (r.charName || r.nickname || '').toLowerCase().includes(q)))
       );
     }
 
@@ -1440,11 +1880,11 @@ class MapleLabDashboard {
         <tr>
           <th>순위</th>
           <th>직업 (극딜 비중)</th>
-          <th>대표 캐릭터 / 표준뚝</th>
-          <th>표준 체급 딜량(Q3)</th>
-          <th>기준 전투력</th>
+          <th>대표 캐릭터 (1위 닉네임)</th>
+          <th>평균 딜량(DPM)</th>
+          <th>평균 전투력</th>
           <th>전투 효율 (역산)</th>
-          <th>6분 가용횟수</th>
+          <th>기록 / 가용횟수</th>
         </tr>
       `;
     }
@@ -1473,22 +1913,25 @@ class MapleLabDashboard {
                 <span class="${job.tag === '극딜' ? 'type-burst' : 'type-sustain'}">${job.tag} · ${job.burst}%</span>
               </div>
             </td>
-            <td>${job.name}</td>
+            <td><strong style="color:var(--text);">${job.name}</strong></td>
             <td class="dps">${job.dps}</td>
             <td>${job.power}</td>
             <td class="efficiency">${job.efficiency}</td>
-            <td><span class="record-count">${job.normActions6m}회</span></td>
+            <td><span class="record-count">${job.records > 0 ? job.records + '명 (' + job.normActions6m + '회)' : job.normActions6m + '회'}</span></td>
           </tr>
         `;
       }).join('');
 
       this.mainTableBody.querySelectorAll('tr[data-job]').forEach(tr => {
-        tr.addEventListener('click', () => this.selectJob(tr.dataset.job));
+        tr.addEventListener('click', () => {
+          this.selectedCharRecord = null;
+          this.selectJob(tr.dataset.job);
+        });
       });
     }
 
     if (this.tableFooterSummary) {
-      this.tableFooterSummary.textContent = `총 ${totalItems}개 직업 중 ${pageItems.length}개 표시`;
+      this.tableFooterSummary.textContent = `총 ${totalItems}개 직업 중 ${pageItems.length}개 표시 (로컬 DB 총 ${allRecs.length.toLocaleString()}건 연동)`;
     }
 
     this.renderPaginationControls(totalPages);
@@ -1499,56 +1942,84 @@ class MapleLabDashboard {
       this.mainTableHead.innerHTML = `
         <tr>
           <th>#</th>
-          <th>닉네임</th>
+          <th>닉네임 (레벨)</th>
           <th>직업</th>
           <th>연무장 DPS</th>
           <th>전투력</th>
           <th>전투 효율</th>
-          <th>무적기 쿨</th>
+          <th>기록일 / 무적쿨</th>
         </tr>
       `;
     }
 
     let list = [...allRecs].sort((a, b) => (b.dps || 0) - (a.dps || 0));
     if (filterJob !== 'ALL') list = list.filter(r => this.isSameJob(r.job, filterJob));
-    if (q) list = list.filter(r => (r.nickname || '').toLowerCase().includes(q) || (r.job || '').toLowerCase().includes(q));
+    if (q) {
+      list = list.filter(r =>
+        (r.charName || r.nickname || r.name || '').toLowerCase().includes(q) ||
+        (r.job || '').toLowerCase().includes(q)
+      );
+    }
 
     if (list.length === 0) {
-      this.mainTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-3);">저장된 개별 캐릭터 연무장 기록이 없습니다.</td></tr>`;
+      this.mainTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-3);">검색 조건에 일치하는 캐릭터 기록이 없습니다.</td></tr>`;
       return;
     }
 
-    this.mainTableBody.innerHTML = list.slice(0, 50).map((r, i) => {
+    const displayList = list.slice(0, 150);
+    this.mainTableBody.innerHTML = displayList.map((r, i) => {
       const meta = this.utilityDb[r.job] || {};
+      const dispName = r.charName || r.nickname || r.name || '이름없음';
+      const lvBadge = r.level ? ` <span style="color:var(--orange); font-size:10px;">(Lv.${r.level})</span>` : '';
+      const rawDate = (r.patchPeriod || r.recordDate || r.collectedAt || '').slice(0, 10);
+      const dateOrCool = rawDate
+        ? `<span style="color:var(--green);">${rawDate}</span> · ${meta.hasIframe ? meta.iframeCoolSec + 's' : '-'}`
+        : (meta.hasIframe ? meta.iframeCoolSec + '초' : '없음');
+      const isSelectedRow = this.selectedCharRecord && (this.selectedCharRecord.replayId === r.replayId && this.selectedCharRecord.charName === dispName);
+
       return `
-        <tr data-job="${r.job}">
-          <td><span class="rank">${i + 1}</span></td>
-          <td><strong style="color:var(--text);">${r.nickname || r.name || '-'}</strong></td>
+        <tr class="${isSelectedRow ? 'selected' : ''}" data-char-idx="${i}" data-job="${r.job}">
+          <td><span class="rank ${i < 3 ? 'rank-' + (i + 1) : ''}">${i + 1}</span></td>
+          <td><strong style="color:var(--text); font-size:12px;">${dispName}</strong>${lvBadge}</td>
           <td>${r.job || '-'}</td>
           <td class="dps">${formatKoreanNumber(r.dps)}</td>
           <td>${formatKoreanNumber(r.combatPower)}</td>
           <td class="efficiency">${(r.efficiency || 0).toLocaleString()}</td>
-          <td><span class="record-count">${meta.hasIframe ? meta.iframeCoolSec + '초' : '없음'}</span></td>
+          <td><span class="record-count">${dateOrCool}</span></td>
         </tr>
       `;
     }).join('');
 
-    this.mainTableBody.querySelectorAll('tr[data-job]').forEach(tr => {
-      tr.addEventListener('click', () => this.selectJob(tr.dataset.job));
+    if (this.tableFooterSummary) {
+      this.tableFooterSummary.textContent = `조건 부합 캐릭터 총 ${list.length.toLocaleString()}명 중 상위 ${displayList.length}명 표시 (행 클릭 시 해당 유저의 스킬 분석 연동)`;
+    }
+
+    this.mainTableBody.querySelectorAll('tr[data-char-idx]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const idx = Number(tr.getAttribute('data-char-idx'));
+        const clickedRec = displayList[idx];
+        if (clickedRec) {
+          this.selectedCharRecord = clickedRec;
+        }
+        this.selectJob(tr.dataset.job);
+      });
     });
   }
 
   renderSkillsTop20TabTable(jobsData) {
     const target = jobsData.find(j => j.job === this.selectedJob) || jobsData[0];
     const skills = this.getJobSkillsForStudio(target.job);
+    const charTitleSuffix = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, target.job))
+      ? ` — ${this.selectedCharRecord.charName} (Lv.${this.selectedCharRecord.level || '-'})`
+      : ` (${target.records}명 평균)`;
 
     if (this.mainTableHead) {
       this.mainTableHead.innerHTML = `
         <tr>
           <th>순위</th>
-          <th>[${target.job}] 스킬명</th>
+          <th>[${target.job}${charTitleSuffix}] 스킬명</th>
           <th>현재 판정 분류</th>
-          <th>평균 딜 점유율</th>
+          <th>딜 점유율</th>
           <th>6분 시전/타수</th>
           <th>30초/90초 타임라인</th>
           <th>커스텀 설정</th>
@@ -1572,7 +2043,7 @@ class MapleLabDashboard {
         <td class="dps">${sk.rate}%</td>
         <td>${sk.useCount.toLocaleString()}회</td>
         <td>30초:${sk.n30} / 90초:${sk.n90}</td>
-        <td><span class="record-count">우측 스튜디오에서 변경</span></td>
+        <td><span class="record-count">스킬·DB 커스텀에서 변경</span></td>
       </tr>
     `).join('');
   }
@@ -1669,7 +2140,11 @@ class MapleLabDashboard {
     const target = jobsData.find(j => j.job === this.selectedJob) || jobsData[0];
     if (!target) return;
 
-    if (this.detailJobTitle) this.detailJobTitle.textContent = `${target.job} 전투 분석`;
+    const focusedCharSuffix = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, target.job))
+      ? ` (${this.selectedCharRecord.charName})`
+      : '';
+
+    if (this.detailJobTitle) this.detailJobTitle.textContent = `${target.job}${focusedCharSuffix} 전투 분석`;
     if (this.detailJobAvatar) this.detailJobAvatar.textContent = target.job.charAt(0);
 
     const savedProfile = this.localDb?.savedJobBurstProfiles?.[target.job];
@@ -1709,14 +2184,21 @@ class MapleLabDashboard {
       this.rangeEndLabel.textContent = `+${this.burstWindowSec - 3}초`;
     }
 
-    const burstDmgNum = Math.round(target.dpsNum * (target.burst / 100));
-    const sustainDmgNum = Math.max(0, target.dpsNum - burstDmgNum);
+    const activeDpsNum = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, target.job) && this.selectedCharRecord.dps > 0)
+      ? this.selectedCharRecord.dps
+      : target.dpsNum;
+    const activeEffNum = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, target.job) && this.selectedCharRecord.efficiency > 0)
+      ? this.selectedCharRecord.efficiency
+      : target.efficiencyNum;
+
+    const burstDmgNum = Math.round(activeDpsNum * (target.burst / 100));
+    const sustainDmgNum = Math.max(0, activeDpsNum - burstDmgNum);
     const apm = (target.normActions6m / 6).toFixed(1);
 
     if (this.metricBurstDmg) this.metricBurstDmg.textContent = formatKoreanNumber(burstDmgNum);
     if (this.metricSustainDmg) this.metricSustainDmg.textContent = formatKoreanNumber(sustainDmgNum);
     if (this.metricApmCasts) this.metricApmCasts.textContent = `${apm}회/분 (6분 ${target.normActions6m}회)`;
-    if (this.metricBpEfficiency) this.metricBpEfficiency.textContent = target.efficiency;
+    if (this.metricBpEfficiency) this.metricBpEfficiency.textContent = activeEffNum.toLocaleString();
 
     const cp = (Number(this.inlineSimCpInput?.value) || 10650) * 10000;
     const frag = Number(this.inlineSimFragInput?.value) || 5656;
@@ -1726,7 +2208,7 @@ class MapleLabDashboard {
     const heroRateAt40k = this.getInterpolatedHexaRate('히어로', 40000);
 
     const stdIdx = HERO_CALIBRATED_FULL_INDEX * (target.stdDpmJo / HERO_BASELINE_DPM_JO) * (heroRateAt40k / rateAt40k);
-    const myIdx = HERO_CALIBRATED_FULL_INDEX * (target.efficiencyNum / 7138);
+    const myIdx = HERO_CALIBRATED_FULL_INDEX * (activeEffNum / 7138);
 
     const stdRealDps = Math.round(cp * stdIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
     const myRealDps = Math.round(cp * myIdx * BP_EFF_TO_INDEX_DIVISOR * (hexaRate / 100) * 0.70 * 1.32);
@@ -1741,6 +2223,7 @@ class MapleLabDashboard {
     }
   }
 
+  // 우측 미니 시뮬레이터 (4대 정렬 기준 동일 적용: CAST_ASC, CAST_DESC, STD_DESC, REV_DESC)
   renderInlineSimulator(jobsData) {
     if (!this.inlineSimRecommendList) return;
 
@@ -1785,7 +2268,6 @@ class MapleLabDashboard {
       };
     });
 
-    // 질문 6에서 '아니오'(연계 제외)가 활성화된 상태라면 우측 미니 시뮬레이터에서도 카데나 등 8종을 즉시 숨김!
     if (trace.terminalRule === 'RESULT_NO_COMBO_SORT') {
       simItems = simItems.filter(it => !this.isComboJob(it.job));
     }
@@ -1796,8 +2278,9 @@ class MapleLabDashboard {
       simItems = simItems.filter(it => it.hasIframe && it.iframeCoolSec > 0 && it.iframeCoolSec <= maxCool);
     }
 
-    if (simSort === 'REV_DESC') simItems.sort((a, b) => b.revDps - a.revDps);
-    else if (simSort === 'CDR_DESC') simItems.sort((a, b) => b.gain4 - a.gain4);
+    if (simSort === 'CAST_ASC') simItems.sort((a, b) => a.normActions6m - b.normActions6m || b.stdDps - a.stdDps);
+    else if (simSort === 'CAST_DESC') simItems.sort((a, b) => b.normActions6m - a.normActions6m || b.stdDps - a.stdDps);
+    else if (simSort === 'REV_DESC') simItems.sort((a, b) => b.revDps - a.revDps);
     else simItems.sort((a, b) => b.stdDps - a.stdDps);
 
     if (this.inlineSimCountText) {
@@ -1807,6 +2290,10 @@ class MapleLabDashboard {
     this.inlineSimRecommendList.innerHTML = simItems.map((item, idx) => {
       const sign = item.diffPct >= 0 ? '+' : '';
       const hatLabel = item.activeHat > 0 ? `${item.activeHat}초뚝` : '스탯뚝';
+      const rightBadge = (simSort === 'CAST_ASC' || simSort === 'CAST_DESC')
+        ? `${item.normActions6m}회`
+        : `${sign}${item.diffPct}%`;
+
       return `
         <article class="sim-card" data-job="${item.job}">
           <span class="sim-rank">${idx + 1}</span>
@@ -1824,7 +2311,7 @@ class MapleLabDashboard {
               </span>
             </div>
           </div>
-          <span class="diff">${sign}${item.diffPct}%</span>
+          <span class="diff">${rightBadge}</span>
         </article>
       `;
     }).join('');
@@ -1887,7 +2374,10 @@ class MapleLabDashboard {
 
     if (this.studioSkillSourceLabel) {
       const hasReal = allSkills.some(s => s.isRealRecord);
-      this.studioSkillSourceLabel.textContent = hasReal ? '실제 연무장 기록 연동됨' : '표준 스킬 템플릿 (커스텀 가능)';
+      const charTag = (this.selectedCharRecord && this.isSameJob(this.selectedCharRecord.job, jobName))
+        ? `'${this.selectedCharRecord.charName}' 기록 연동됨`
+        : '직업 평균 기록 연동됨';
+      this.studioSkillSourceLabel.textContent = hasReal ? charTag : '표준 스킬 템플릿 (커스텀 가능)';
     }
 
     const separatedSkills = allSkills.filter(sk => sk.role === 'BUFF' || sk.role === 'PROC');
@@ -2050,7 +2540,7 @@ class MapleLabDashboard {
       updatedAt: new Date().toISOString()
     };
 
-    await this.persistAllCustomDataToLocalDb(`💾 [${job}] 커스텀 DB(극딜 ${validBurst}%)가 로컬 DB 및 시뮬레이터에 저장되었습니다!`);
+    await this.persistAllCustomDataToLocalDb(`💾 [${job}] 커스텀 DB(극딜 ${validBurst}%)가 저장되었습니다!`);
     this.renderAll();
   }
 
@@ -2066,7 +2556,7 @@ class MapleLabDashboard {
     delete this.selectedBurstSkillMap[job];
 
     this.syncStudioFormInputs(job);
-    await this.persistAllCustomDataToLocalDb(`🔄 [${job}] 설정이 기본값으로 초기화되었습니다.`);
+    await this.persistAllCustomDataToLocalDb(`🔄 [${job}] 설정이 초기화되었습니다.`);
     this.renderAll();
   }
 
@@ -2077,6 +2567,7 @@ class MapleLabDashboard {
         this.apiStatusBadge.textContent = 'Key 필요';
         this.apiStatusBadge.style.color = 'var(--red)';
       }
+      this.appendUpdateLog('❌ 계정 로드 실패: NEXON Open API Key를 입력해 주세요.');
       return;
     }
 
@@ -2105,6 +2596,7 @@ class MapleLabDashboard {
             idx++;
             chars.push({
               id: `api_char_${idx}_${ch.character_name}`,
+              charName: ch.character_name,
               nickname: ch.character_name,
               job: ch.character_class,
               level: ch.character_level,
@@ -2125,28 +2617,100 @@ class MapleLabDashboard {
         this.apiStatusBadge.textContent = `${chars.length}명 로드됨`;
         this.apiStatusBadge.style.color = 'var(--green)';
       }
+      this.appendUpdateLog(`✅ 내 계정 캐릭터 총 ${chars.length}명 로드 완료!`);
       this.renderAll();
     } catch (err) {
       if (this.apiStatusBadge) {
         this.apiStatusBadge.textContent = '조회 실패';
         this.apiStatusBadge.style.color = 'var(--red)';
       }
+      this.appendUpdateLog(`❌ 계정 로드 실패: ${err.message}`);
     }
   }
 
   updateWorkspaceGridClasses() {
     if (!this.mainWorkspace) return;
+    const isAnyStudioOpen = this.rightStudioSlotMode !== 'none';
+    const isUpdateOpen = this.rightStudioSlotMode === 'update';
+    const isCustomOpen = this.rightStudioSlotMode === 'custom';
+
     this.mainWorkspace.classList.toggle('without-detail', !this.rightOpen);
-    this.mainWorkspace.classList.toggle('with-studio', this.studioOpen);
+    this.mainWorkspace.classList.toggle('with-studio', isAnyStudioOpen);
+
     if (this.rightDetailPanel) this.rightDetailPanel.classList.toggle('hidden', !this.rightOpen);
-    if (this.customDbStudioPanel) this.customDbStudioPanel.classList.toggle('hidden', !this.studioOpen);
+    if (this.dataUpdateSidePanel) this.dataUpdateSidePanel.classList.toggle('hidden', !isUpdateOpen);
+    if (this.customDbStudioPanel) this.customDbStudioPanel.classList.toggle('hidden', !isCustomOpen);
+
+    if (this.toggleDataUpdatePanelBtn) {
+      this.toggleDataUpdatePanelBtn.classList.toggle('active-update-btn', isUpdateOpen);
+      this.toggleDataUpdatePanelBtn.textContent = isUpdateOpen ? '🔄 데이터 업데이트 닫기' : '🔄 데이터 업데이트';
+    }
     if (this.toggleCustomStudioBtn) {
-      this.toggleCustomStudioBtn.classList.toggle('active-studio-btn', this.studioOpen);
-      this.toggleCustomStudioBtn.textContent = this.studioOpen ? '🛠️ 스킬·DB 커스텀 설정 닫기' : '🛠️ 스킬·DB 커스텀 설정 열기';
+      this.toggleCustomStudioBtn.classList.toggle('active-studio-btn', isCustomOpen);
+      this.toggleCustomStudioBtn.textContent = isCustomOpen ? '🛠️ 스킬·DB 커스텀 설정 닫기' : '🛠️ 스킬·DB 커스텀 설정 열기';
     }
   }
 
   bindEvents() {
+    if (this.toggleDataUpdatePanelBtn) {
+      this.toggleDataUpdatePanelBtn.addEventListener('click', () => {
+        this.rightStudioSlotMode = this.rightStudioSlotMode === 'update' ? 'none' : 'update';
+        this.updateWorkspaceGridClasses();
+      });
+    }
+    if (this.closeDataUpdatePanelBtn) {
+      this.closeDataUpdatePanelBtn.addEventListener('click', () => {
+        this.rightStudioSlotMode = 'none';
+        this.updateWorkspaceGridClasses();
+      });
+    }
+
+    if (this.toggleCustomStudioBtn) {
+      this.toggleCustomStudioBtn.addEventListener('click', () => {
+        this.rightStudioSlotMode = this.rightStudioSlotMode === 'custom' ? 'none' : 'custom';
+        this.updateWorkspaceGridClasses();
+      });
+    }
+    if (this.closeStudioPanelBtn) {
+      this.closeStudioPanelBtn.addEventListener('click', () => {
+        this.rightStudioSlotMode = 'none';
+        this.updateWorkspaceGridClasses();
+      });
+    }
+
+    if (this.btnSelectPatch13Jobs) {
+      this.btnSelectPatch13Jobs.addEventListener('click', () => {
+        this.selectedUpdateJobs = new Set(MINOR_PATCH_13_JOBS);
+        this.renderAll();
+      });
+    }
+    if (this.btnSelectAll48Jobs) {
+      this.btnSelectAll48Jobs.addEventListener('click', () => {
+        this.selectedUpdateJobs = new Set(MASTER_JOB_LIST);
+        this.renderAll();
+      });
+    }
+    if (this.btnClearUpdateJobs) {
+      this.btnClearUpdateJobs.addEventListener('click', () => {
+        this.selectedUpdateJobs.clear();
+        this.renderAll();
+      });
+    }
+    if (this.patchStartDateInput) {
+      this.patchStartDateInput.addEventListener('change', () => this.renderAll());
+    }
+    if (this.patchEndDateInput) {
+      this.patchEndDateInput.addEventListener('change', () => this.renderAll());
+    }
+    if (this.startBatchApiUpdateBtn) {
+      this.startBatchApiUpdateBtn.addEventListener('click', () => this.handleStartBatchApiUpdate());
+    }
+    if (this.stopBatchApiUpdateBtn) {
+      this.stopBatchApiUpdateBtn.addEventListener('click', () => {
+        this.abortBatchUpdate = true;
+      });
+    }
+
     if (this.toggleMainRecommendBtn) {
       this.toggleMainRecommendBtn.addEventListener('click', () => {
         const nextMode = this.mainCenterViewMode === 'recommend' ? 'analytics' : 'recommend';
@@ -2191,18 +2755,18 @@ class MapleLabDashboard {
     if (this.loadSampleLowCharsBtn) {
       this.loadSampleLowCharsBtn.addEventListener('click', () => {
         this.accountCharacters = [
-          { id: 'sample_1', nickname: '유니온아란', job: '아란', level: 200, world: '스카니아' },
-          { id: 'sample_2', nickname: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
-          { id: 'sample_3', nickname: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
-          { id: 'sample_4', nickname: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
-          { id: 'sample_5', nickname: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
-          { id: 'sample_6', nickname: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
-          { id: 'sample_7', nickname: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
-          { id: 'sample_8', nickname: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
-          { id: 'sample_9', nickname: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
-          { id: 'sample_10', nickname: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
-          { id: 'sample_11', nickname: '도원호영', job: '호영', level: 250, world: '스카니아' },
-          { id: 'sample_12', nickname: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
+          { id: 'sample_1', nickname: '유니온아란', charName: '유니온아란', job: '아란', level: 200, world: '스카니아' },
+          { id: 'sample_2', nickname: '링크메르', charName: '링크메르', job: '메르세데스', level: 210, world: '스카니아' },
+          { id: 'sample_3', nickname: '주보히어로', charName: '주보히어로', job: '히어로', level: 215, world: '스카니아' },
+          { id: 'sample_4', nickname: '체급카데나', charName: '체급카데나', job: '카데나', level: 220, world: '스카니아' },
+          { id: 'sample_5', nickname: '무적미하일', charName: '무적미하일', job: '미하일', level: 220, world: '스카니아' },
+          { id: 'sample_6', nickname: '극딜카이저', charName: '극딜카이저', job: '카이저', level: 225, world: '스카니아' },
+          { id: 'sample_7', nickname: '평딜불독', charName: '평딜불독', job: '아크메이지(불,독)', level: 230, world: '스카니아' },
+          { id: 'sample_8', nickname: '배트나워', charName: '배트나워', job: '나이트워커', level: 235, world: '스카니아' },
+          { id: 'sample_9', nickname: '해신스커', charName: '해신스커', job: '스트라이커', level: 240, world: '스카니아' },
+          { id: 'sample_10', nickname: '속사보마', charName: '속사보마', job: '보우마스터', level: 245, world: '스카니아' },
+          { id: 'sample_11', nickname: '도원호영', charName: '도원호영', job: '호영', level: 250, world: '스카니아' },
+          { id: 'sample_12', nickname: '사슬듀블', charName: '사슬듀블', job: '듀얼블레이드', level: 255, world: '스카니아' }
         ];
         this.selectedLowCharIds = new Set(this.accountCharacters.map(c => c.id));
         this.renderAll();
@@ -2211,8 +2775,7 @@ class MapleLabDashboard {
 
     if (this.recTargetCpMan) this.recTargetCpMan.addEventListener('input', () => this.renderAll());
     if (this.recTargetFrags) this.recTargetFrags.addEventListener('input', () => this.renderAll());
-    if (this.recPerfFormulaToggle) this.recPerfFormulaToggle.addEventListener('change', () => this.renderAll());
-    if (this.recCastOrderToggle) this.recCastOrderToggle.addEventListener('change', () => this.renderAll());
+    if (this.recResultSortSelect) this.recResultSortSelect.addEventListener('change', () => this.renderAll());
 
     if (this.resetSurveyTreeBtn) {
       this.resetSurveyTreeBtn.addEventListener('click', () => {
@@ -2226,19 +2789,6 @@ class MapleLabDashboard {
         this.rightOpen = !this.rightOpen;
         this.updateWorkspaceGridClasses();
         this.toggleExtensionBtn.innerHTML = `${createIconSvg('bolt', 16)} ${this.rightOpen ? '분석 패널 닫기' : '분석 패널 열기'}`;
-      });
-    }
-
-    if (this.toggleCustomStudioBtn) {
-      this.toggleCustomStudioBtn.addEventListener('click', () => {
-        this.studioOpen = !this.studioOpen;
-        this.updateWorkspaceGridClasses();
-      });
-    }
-    if (this.closeStudioPanelBtn) {
-      this.closeStudioPanelBtn.addEventListener('click', () => {
-        this.studioOpen = false;
-        this.updateWorkspaceGridClasses();
       });
     }
 
@@ -2360,17 +2910,18 @@ class MapleLabDashboard {
 
     if (this.nicknameSearchInput) {
       this.nicknameSearchInput.addEventListener('input', () => {
-        this.searchQuery = this.nicknameSearchInput.value;
-        this.currentPage = 1;
-        const exactJob = MASTER_JOB_LIST.find(j => j === this.searchQuery.trim());
-        if (exactJob) this.selectJob(exactJob);
-        else this.renderAll();
+        this.executeSmartSearch(this.nicknameSearchInput.value, false);
+      });
+      this.nicknameSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.executeSmartSearch(this.nicknameSearchInput.value, true);
+        }
       });
     }
     if (this.nicknameSearchBtn) {
       this.nicknameSearchBtn.addEventListener('click', () => {
-        this.searchQuery = this.nicknameSearchInput?.value || '';
-        this.renderAll();
+        this.executeSmartSearch(this.nicknameSearchInput?.value || '', true);
       });
     }
 
@@ -2398,11 +2949,18 @@ class MapleLabDashboard {
     }
 
     if (this.seasonFilterSelect) {
-      this.seasonFilterSelect.addEventListener('change', () => this.renderAll());
+      this.seasonFilterSelect.addEventListener('change', () => {
+        this.localDb.currentSeasonKey = this.seasonFilterSelect.value;
+        const topSeasonEl = document.getElementById('topSeasonNameText');
+        const sObj = this.localDb?.seasons?.[this.seasonFilterSelect.value];
+        if (topSeasonEl && sObj) topSeasonEl.textContent = sObj.name;
+        this.renderAll();
+      });
     }
     if (this.mainJobFilterSelect) {
       this.mainJobFilterSelect.addEventListener('change', () => {
         const val = this.mainJobFilterSelect.value;
+        this.selectedCharRecord = null;
         if (val !== 'ALL') this.selectJob(val);
         else {
           this.currentPage = 1;
@@ -2424,7 +2982,7 @@ class MapleLabDashboard {
 
     if (this.cycleSortModeBtn) {
       this.cycleSortModeBtn.addEventListener('click', () => {
-        const modes = ['EFF_DESC', 'STD_DESC', 'BURST_DESC', 'ACT_ASC'];
+        const modes = ['EFF_DESC', 'STD_DESC', 'ACT_ASC', 'ACT_DESC'];
         const nextIdx = (modes.indexOf(this.sortMode) + 1) % modes.length;
         this.sortMode = modes[nextIdx];
         this.renderAll();

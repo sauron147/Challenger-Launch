@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Maple Lab — 전투 분석 & 캐릭터 맞춤형 직업 추천</title>
+  <title>Maple Lab — 전투 분석 & 데이터 업데이트 대시보드</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -36,8 +36,11 @@
         <button class="button button-recommend-wizard" type="button" id="toggleMainRecommendBtn">
           🧭 대화면 직업추천 열기
         </button>
-        <button class="button button-custom-studio active-studio-btn" type="button" id="toggleCustomStudioBtn">
-          🛠️ 스킬·DB 커스텀 설정 닫기
+        <button class="button button-update-center active-update-btn" type="button" id="toggleDataUpdatePanelBtn">
+          🔄 데이터 업데이트 닫기
+        </button>
+        <button class="button button-custom-studio" type="button" id="toggleCustomStudioBtn">
+          🛠️ 스킬·DB 커스텀 설정 열기
         </button>
         <button class="button button-primary" type="button" id="toggleExtensionBtn"></button>
       </div>
@@ -47,64 +50,6 @@
     <div class="workspace with-studio" id="mainWorkspace">
       <!-- 1. 좌측 사이드바 -->
       <aside class="sidebar">
-        <section class="panel">
-          <header class="panel-header">
-            <div class="panel-heading">
-              <span class="panel-icon" data-icon="key"></span>
-              <strong>계정 불러오기</strong>
-            </div>
-            <span class="status-badge" id="apiStatusBadge">대기 중</span>
-          </header>
-
-          <div class="account-form">
-            <label class="input-shell">
-              <span data-icon="key"></span>
-              <input type="password" id="apiKeyInput" placeholder="NEXON Open API Key" />
-              <button type="button" id="toggleApiKeyVisBtn">보기</button>
-            </label>
-            <button class="button button-primary" type="button" id="loadAccountBtn">계정 로드</button>
-          </div>
-
-          <div class="two-fields">
-            <label class="field">
-              <span>월드</span>
-              <span class="select-wrap">
-                <select id="worldFilterSelect">
-                  <option value="ALL">전체 월드</option>
-                  <option value="스카니아">스카니아</option>
-                  <option value="베라">베라</option>
-                  <option value="루나">루나</option>
-                  <option value="제니스">제니스</option>
-                  <option value="크로아">크로아</option>
-                  <option value="유니온">유니온</option>
-                  <option value="엘리시움">엘리시움</option>
-                  <option value="이노시스">이노시스</option>
-                  <option value="레드">레드</option>
-                  <option value="오로라">오로라</option>
-                  <option value="아케인">아케인</option>
-                  <option value="노바">노바</option>
-                  <option value="에오스">에오스</option>
-                  <option value="핼리오스">핼리오스</option>
-                </select>
-                <span data-icon="chevron" data-size="14"></span>
-              </span>
-            </label>
-            <label class="field">
-              <span>최대 레벨</span>
-              <input type="number" id="maxLevelInput" value="300" min="1" max="300" />
-            </label>
-          </div>
-
-          <label class="input-shell muted">
-            <span data-icon="search"></span>
-            <input type="text" id="nicknameSearchInput" placeholder="닉네임 또는 직업명을 입력하세요" />
-            <button type="button" id="nicknameSearchBtn" title="조회">
-              <span data-icon="arrow"></span>
-            </button>
-          </label>
-        </section>
-
-        <!-- 캐릭터 목록 패널 -->
         <section class="panel">
           <header class="panel-header">
             <div class="panel-heading">
@@ -123,7 +68,7 @@
             <div class="empty-state">
               <span data-icon="users" data-size="22"></span>
               <strong>캐릭터를 불러와 주세요</strong>
-              <p>API Key로 계정을 로드한 뒤 저레벨 캐릭터를 클릭하면 다중 선택 목록에 즉시 추가됩니다.</p>
+              <p>우측 [🔄 데이터 업데이트] 패널에서 API Key로 계정을 로드할 수 있습니다.</p>
             </div>
           </div>
         </section>
@@ -175,7 +120,7 @@
         </footer>
       </aside>
 
-      <!-- 2. 중앙 메인 콘텐츠 (연무장 기록 분석 <-> 대화면 직업 추천 덮어쓰기 전환) -->
+      <!-- 2. 중앙 메인 콘텐츠 -->
       <section class="main-content">
 
         <!-- [중앙 뷰 A: 기본 연무장 기록 분석 화면] -->
@@ -184,7 +129,7 @@
             <div>
               <span class="eyebrow">BATTLE PRACTICE ANALYTICS</span>
               <h1>연무장 기록 분석</h1>
-              <p>직업별 전투 효율과 660ms·쿨뚝 보정 데이터를 한눈에 비교하고 직접 커스텀하세요.</p>
+              <p>직업별 전투 효율과 660ms·쿨뚝 보정 데이터를 한눈에 비교하고 패치 기간별 데이터를 업데이트하세요.</p>
             </div>
 
             <div class="page-filters">
@@ -215,7 +160,7 @@
               <span class="kpi-icon violet" data-icon="layers"></span>
               <div>
                 <span>전체 기록 / 분석 직업</span>
-                <strong id="kpiTotalRecords">48직업</strong>
+                <strong id="kpiTotalRecords">0건</strong>
                 <em id="kpiSeasonSub">이번 시즌</em>
               </div>
             </article>
@@ -241,7 +186,7 @@
             <article class="kpi-card">
               <span class="kpi-icon green" data-icon="clock"></span>
               <div>
-                <span>커스텀 보정 프로필</span>
+                <span>커스텀 & 패치 상태</span>
                 <strong id="kpiCustomCount">0개 직업</strong>
                 <em id="kpiStdDelaySub">660ms 사출기 분리</em>
               </div>
@@ -283,7 +228,7 @@
           </div>
         </div>
 
-        <!-- [중앙 뷰 B: 연무장 기록 분석 칸에 덮어씌워지는 대화면 직업 추천 위자드] -->
+        <!-- [중앙 뷰 B: 대화면 직업 추천 위자드] -->
         <div id="jobRecommendOverlayView" class="recommend-full-overlay hidden">
           <div class="page-heading">
             <div>
@@ -298,7 +243,7 @@
             </div>
           </div>
 
-          <!-- STEP 1: API 연동 내 계정 저레벨 캐릭터 다중 선택 -->
+          <!-- STEP 1: 저레벨 캐릭터 다중 선택 -->
           <section class="content-card rec-step-card">
             <div class="rec-step-header">
               <div>
@@ -325,7 +270,7 @@
             <div class="low-char-grid" id="recLowLevelCharGrid"></div>
           </section>
 
-          <!-- STEP 2: 질문 1 ~ 질문 7 분기형 결정 트리 (Decision Tree) -->
+          <!-- STEP 2: 질문 1 ~ 7 분기 트리 -->
           <section class="content-card rec-step-card">
             <div class="rec-step-header">
               <div>
@@ -342,40 +287,34 @@
               </div>
             </div>
 
-            <!-- 진행 경로 브레드크럼 바 -->
             <div class="tree-breadcrumb-bar" id="treeBreadcrumbBar"></div>
 
-            <!-- 현재 활성화된 질문 대형 카드 + 전체 질문 트리 맵 -->
             <div class="decision-tree-workspace">
               <div class="active-question-hero" id="activeQuestionHeroBox"></div>
               <div class="tree-nodes-overview" id="treeNodesOverviewBox"></div>
             </div>
           </section>
 
-          <!-- STEP 3: 다중 선택한 캐릭터 한정 최종 정렬 결과 -->
+          <!-- STEP 3: 다중 선택한 캐릭터 한정 최종 정렬 결과 (4대 정렬 기준 통합) -->
           <section class="content-card rec-step-card">
             <div class="rec-step-header">
               <div>
                 <span class="rec-step-badge" style="background: var(--green); color: #052e16;">RESULT</span>
                 <strong id="recResultHeaderTitle">선택한 캐릭터 맞춤형 추천 정렬 결과</strong>
-                <small id="recSelectedCharCompareSummary">다중 선택한 캐릭터들에 한해서 질문 트리 결과대로 정렬합니다.</small>
+                <small id="recSelectedCharCompareSummary">질문 트리 결과에 따라 자동 정렬되며, 우측 4가지 정렬 기준으로 즉시 전환할 수 있습니다.</small>
               </div>
               <div style="display: flex; gap: 8px; align-items: center;">
-                <select id="recPerfFormulaToggle" class="mini-formula-select" title="성능 우선 정렬 시 기준이 될 데미지 공식을 선택합니다">
-                  <option value="STD" selected>성능 기준: 🟢 표준체급(Q3) 딜량</option>
-                  <option value="REV">성능 기준: 🔵 내 역산공식(전투력효율)</option>
-                </select>
-                <select id="recCastOrderToggle" class="mini-formula-select" title="스킬 가용횟수 정렬 시 오름차순/내림차순 방향을 선택합니다">
-                  <option value="LOW_FIRST" selected>가용횟수 정렬: 적은순 (조작 편한 캐릭터 위주)</option>
-                  <option value="HIGH_FIRST">가용횟수 정렬: 많은순 (손 바쁜 고타수 위주)</option>
+                <span style="font-size: 11px; color: var(--text-3); font-weight: 700;">정렬 기준:</span>
+                <select id="recResultSortSelect" class="mini-formula-select" title="4가지 핵심 기준으로 선택된 캐릭터들을 즉시 재정렬합니다">
+                  <option value="CAST_ASC">🛋️ 조작 적은 순 (조작이 편한 캐릭터)</option>
+                  <option value="CAST_DESC">🎹 조작 많은 순 (조작이 어려운 캐릭터)</option>
+                  <option value="STD_DESC" selected>🟢 표준체급이 높은 순</option>
+                  <option value="REV_DESC">🔵 역산공식이 높은 순</option>
                 </select>
               </div>
             </div>
 
-            <!-- 최종 도달한 판정 규칙 요약 배너 -->
             <div id="recCurrentCharBanner" class="rec-current-char-banner"></div>
-
-            <!-- 선택한 캐릭터 한정 결과 카드 그리드 -->
             <div class="rec-result-cards-grid" id="recResultCardsGrid"></div>
           </section>
         </div>
@@ -553,12 +492,13 @@
                 <input type="number" id="inlineSimBossHpInput" value="779" step="10" />
               </label>
               <label class="field">
-                <span>시뮬 정렬 기준</span>
+                <span>시뮬 정렬 기준 (4종)</span>
                 <span class="select-wrap">
                   <select id="inlineSimSortSelect">
-                    <option value="STD_DESC">🟢 표준체급(Q3) 순</option>
-                    <option value="REV_DESC">🔵 내 역산공식 순</option>
-                    <option value="CDR_DESC">🎩 4초뚝 유효율 순</option>
+                    <option value="CAST_ASC">🛋️ 조작 적은 순 (조작이 편한 캐릭터)</option>
+                    <option value="CAST_DESC">🎹 조작 많은 순 (조작이 어려운 캐릭터)</option>
+                    <option value="STD_DESC" selected>🟢 표준체급이 높은 순</option>
+                    <option value="REV_DESC">🔵 역산공식이 높은 순</option>
                   </select>
                   <span data-icon="chevron" data-size="14"></span>
                 </span>
@@ -568,8 +508,142 @@
         </section>
       </aside>
 
-      <!-- 4. 독립형 [스킬 극딜 분류 & 로컬 DB 커스텀 설정 패널] -->
-      <aside class="custom-studio-panel" id="customDbStudioPanel">
+      <!-- 4-A. 데이터 업데이트 & 검색엔진 패널 -->
+      <aside class="custom-studio-panel" id="dataUpdateSidePanel">
+        <div class="studio-header">
+          <div>
+            <span class="eyebrow" style="color: var(--blue);">DATA UPDATE & API SEARCH ENGINE</span>
+            <h2>🔄 데이터 업데이트 & 검색 센터</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeDataUpdatePanelBtn" title="데이터 업데이트 패널 닫기">✕</button>
+        </div>
+
+        <div class="studio-scroll-body">
+          <section class="detail-section" style="flex-shrink: 0;">
+            <div class="section-title">
+              <span>🔑 NEXON Open API & 캐릭터 검색엔진</span>
+              <small id="apiStatusBadge" style="color: var(--orange); font-weight: 700;">대기 중</small>
+            </div>
+            <div class="section-body" style="display: flex; flex-direction: column; gap: 8px;">
+              <div class="account-form" style="padding: 0;">
+                <label class="input-shell">
+                  <span data-icon="key"></span>
+                  <input type="password" id="apiKeyInput" placeholder="NEXON Open API Key 입력" />
+                  <button type="button" id="toggleApiKeyVisBtn">보기</button>
+                </label>
+                <button class="button button-primary" type="button" id="loadAccountBtn">계정 로드</button>
+              </div>
+
+              <div class="two-fields" style="padding: 0;">
+                <label class="field">
+                  <span>월드 필터</span>
+                  <span class="select-wrap">
+                    <select id="worldFilterSelect">
+                      <option value="ALL">전체 월드</option>
+                      <option value="스카니아">스카니아</option>
+                      <option value="베라">베라</option>
+                      <option value="루나">루나</option>
+                      <option value="제니스">제니스</option>
+                      <option value="크로아">크로아</option>
+                      <option value="유니온">유니온</option>
+                      <option value="엘리시움">엘리시움</option>
+                      <option value="이노시스">이노시스</option>
+                      <option value="레드">레드</option>
+                      <option value="오로라">오로라</option>
+                      <option value="아케인">아케인</option>
+                      <option value="노바">노바</option>
+                      <option value="에오스">에오스</option>
+                      <option value="핼리오스">핼리오스</option>
+                    </select>
+                    <span data-icon="chevron" data-size="14"></span>
+                  </span>
+                </label>
+                <label class="field">
+                  <span>최대 레벨</span>
+                  <input type="number" id="maxLevelInput" value="300" min="1" max="300" />
+                </label>
+              </div>
+
+              <label class="input-shell" style="margin: 0;">
+                <span data-icon="search"></span>
+                <input type="text" id="nicknameSearchInput" placeholder="테이블 내 닉네임·직업명 검색 (엔터 시 자동 이동)" />
+                <button type="button" id="nicknameSearchBtn" title="검색 및 자동 이동">
+                  <span data-icon="arrow"></span>
+                </button>
+              </label>
+            </div>
+          </section>
+
+          <section class="detail-section" style="flex-shrink: 0; border-color: rgba(85, 167, 255, 0.4);">
+            <div class="section-title" style="background: rgba(85, 167, 255, 0.1);">
+              <span>📅 마이너 패치 연무장 기간 설정</span>
+              <small id="patchPeriodBadge" style="color: var(--blue);">기간 내 기록 반영</small>
+            </div>
+            <div class="section-body" style="display: flex; flex-direction: column; gap: 7px;">
+              <div class="two-fields" style="padding: 0; grid-template-columns: 1fr 1fr;">
+                <label class="field">
+                  <span>패치 적용 시작일</span>
+                  <input type="date" id="patchStartDateInput" value="2026-11-05" />
+                </label>
+                <label class="field">
+                  <span>연무장 종료일</span>
+                  <input type="date" id="patchEndDateInput" value="2026-11-18" />
+                </label>
+              </div>
+              <p style="margin: 0; font-size: 9px; color: var(--text-2); line-height: 1.45;">
+                💡 지정한 패치 기간(예: <b>11월 5일 ~ 11월 18일</b>) 동안 아래에서 선택한 직업들의 기존 DB 닉네임을 API로 재검색하여, 해당 기간에 기록/갱신된 캐릭터 데이터를 로컬 DB에 업데이트합니다.
+              </p>
+            </div>
+          </section>
+
+          <section class="detail-section" style="flex: 1; display: flex; flex-direction: column; min-height: 220px;">
+            <div class="section-title">
+              <span>🎯 재검색할 직업 선택 (<b id="updateSelectedJobCount" style="color: var(--green);">13</b>개 직업)</span>
+              <small id="updateTargetNicknameCount">대상 닉네임 0명</small>
+            </div>
+
+            <div class="burst-selection-bar">
+              <div class="burst-sel-chips">
+                <button class="sel-chip-btn" type="button" id="btnSelectPatch13Jobs" style="color: var(--orange); border-color: rgba(242,164,82,0.5);">
+                  ⚡ 패치 13직업 선택 (호영·불독·카이저 등)
+                </button>
+                <button class="sel-chip-btn" type="button" id="btnSelectAll48Jobs">전체 48직업</button>
+                <button class="sel-chip-btn" type="button" id="btnClearUpdateJobs">선택 해제</button>
+              </div>
+            </div>
+
+            <div class="update-job-pills-grid" id="updateJobPillsContainer"></div>
+          </section>
+
+          <section class="detail-section" style="flex-shrink: 0;">
+            <div class="section-title">
+              <span>🚀 선택 직업 닉네임 API 재검색 실행</span>
+              <small id="apiBatchProgressText">0 / 0명 (0%)</small>
+            </div>
+            <div class="section-body" style="display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: grid; grid-template-columns: 1fr auto; gap: 6px;">
+                <button class="button button-primary" type="button" id="startBatchApiUpdateBtn" style="height: 34px;">
+                  🔄 선택 직업 DB 닉네임 API 재검색 & 반영
+                </button>
+                <button class="button button-secondary hidden" type="button" id="stopBatchApiUpdateBtn" style="height: 34px; color: var(--red); border-color: var(--red);">
+                  ⏹️ 중지
+                </button>
+              </div>
+
+              <div class="update-progress-track">
+                <div class="update-progress-fill" id="apiBatchProgressBar" style="width: 0%;"></div>
+              </div>
+
+              <div class="update-log-console" id="apiBatchLogConsole">
+                대기 중 — 상단에 NEXON Open API Key를 입력하고, 패치 기간과 재검색할 직업을 선택한 뒤 [🔄 선택 직업 DB 닉네임 API 재검색 & 반영] 버튼을 눌러주세요.
+              </div>
+            </div>
+          </section>
+        </div>
+      </aside>
+
+      <!-- 4-B. 독립형 [스킬 극딜 분류 & 로컬 DB 커스텀 설정 패널] -->
+      <aside class="custom-studio-panel hidden" id="customDbStudioPanel">
         <div class="studio-header">
           <div>
             <span class="eyebrow" style="color: var(--orange);">USER CUSTOM DB STUDIO</span>
@@ -578,14 +652,13 @@
           <button class="icon-button" type="button" id="closeStudioPanelBtn" title="설정 패널 닫기">✕</button>
         </div>
 
-        <!-- 스튜디오 상단: 대화면 직업 추천 위자드 바로가기 배너 버튼 -->
         <button class="studio-recommend-banner-btn" type="button" id="studioOpenRecommendWizardBtn">
           <span>🧭 <b>저레벨 다중 선택 & 질문 1~7 직업 추천</b> (열기)</span>
           <span>➔</span>
         </button>
 
         <p class="studio-desc">
-          기본 설정이 마음에 들지 않는다면 스킬 행을 직접 클릭해 <b>[극딜 스킬]</b>로 지정하거나, 체급·쿨뚝·무적기 DB 수치를 내 기준으로 덮어써서 로컬 DB(<code>maple_local_db.json</code>)에 영구 저장하세요.
+          스킬 행을 직접 클릭해 <b>[극딜 스킬]</b>로 지정하거나, 체급·쿨뚝·무적기 DB 수치를 내 기준으로 덮어써서 로컬 DB(<code>maple_local_db.json</code>)에 영구 저장하세요.
         </p>
 
         <div class="studio-job-bar">
@@ -613,7 +686,6 @@
           <button type="button" data-stab="params">⚙️ 체급·쿨뚝·무적 DB 수정</button>
         </div>
 
-        <!-- [스튜디오 탭 1: 스킬 극딜 다중 선택] -->
         <div id="studioSkillsTabView" class="studio-scroll-body">
           <section class="detail-section">
             <button class="section-trigger" type="button" id="toggleBuffListAccordionBtn">
@@ -667,7 +739,6 @@
           </section>
         </div>
 
-        <!-- [스튜디오 탭 2: 직업 체급·쿨뚝·무적기 수치 직접 편집기] -->
         <div id="studioParamsTabView" class="studio-scroll-body hidden">
           <section class="detail-section">
             <div class="section-title">
@@ -691,7 +762,7 @@
                 </span>
               </label>
               <label class="field">
-                <span>🟢 5기 표준체급 딜량 (조 단위, Q3)</span>
+                <span>🟢 표준체급 딜량 (조 단위, Q3)</span>
                 <input type="number" id="editJobStdDpmJo" step="0.005" min="1" max="20" />
               </label>
               <label class="field">
